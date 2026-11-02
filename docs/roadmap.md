@@ -32,7 +32,8 @@
     - 失敗時に関数が止まり一時ファイルが残っていた → `try` で囲んだ
   - bash（Git Bash）：new / root / 失敗時 / `-c`（PATH の先頭に置いた偽の `claude` で確認）
   - 本物の `claude` / `codex` の起動と、端末（Herdr）上での対話的な動作は未確認
-- [x] 統合テスト（`tests/cli.rs`）：`WORKROOM_*` を一時ディレクトリに向けて実行ファイルを動かす（11件）
+- [x] 統合テスト（`tests/cli.rs`）：`WORKROOM_*` を一時ディレクトリに向けて実行ファイルを動かす（12件）
+  - Google Drive for desktop の `.tmp.drivedownload` / `.tmp.driveupload` を案件として扱わないことも固定した（単体テストにも）
 - ratatui を 0.30 に上げた（clap の `unicode` 機能と `unicode-width` の版がぶつかったため。TUI はまだ書いていない）
 
 ## M2 TUI ピッカー
@@ -52,7 +53,7 @@
 - [ ] `grep`、`import` の統合テストを書く（Claude のデータは `WORKROOM_CLAUDE_DIR` で一時ディレクトリへ）
 
 ## M5 公開準備
-- [ ] README.md（インストール、シェルごとの設定、import が非公式形式に依存する旨）
+- [ ] README.md（インストール、シェルごとの設定、import が非公式形式に依存する旨、「Windows で Codex を使う場合、作業ルートはクラウドの仮想ドライブではなく NTFS 上に置く」旨。design.md の「ディレクトリ構成」を参照）
 - [ ] LICENSE（MIT）
 - [ ] GitHub Actions（Windows / Linux で `cargo test`、clippy、fmt）
 - [ ] Releases 用のビルド（Windows x64 / Linux x64）

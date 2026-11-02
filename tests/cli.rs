@@ -178,6 +178,21 @@ fn query_without_subcommand_moves_to_unique_match() {
 }
 
 #[test]
+fn drive_sync_temp_dirs_are_not_projects() {
+    let env = Env::new();
+    env.run(&["new", "real", "--date", "2026-11-02"]);
+    for hidden in [".tmp.drivedownload", ".tmp.driveupload"] {
+        fs::create_dir_all(env.root.join(hidden).join("2026-11-02-ghost")).unwrap();
+    }
+    assert_eq!(stdout(&env.run(&["names"])), "2026-11-02-real\n");
+    let out = stdout(&env.run(&["ls", "-a"]));
+    assert!(!out.contains(".tmp.drive") && !out.contains("ghost"), "{out}");
+    let (out, lines) = env.run_cwd(&["ghost"]);
+    assert!(!out.status.success());
+    assert!(lines.is_empty());
+}
+
+#[test]
 fn root_creates_root_and_template() {
     let env = Env::new();
     let (out, lines) = env.run_cwd(&["root"]);

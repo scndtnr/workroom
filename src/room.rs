@@ -255,6 +255,20 @@ mod tests {
     }
 
     #[test]
+    fn scan_skips_hidden_dirs_such_as_drive_sync_temp() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        // Google Drive for desktop がルート直下に作る一時ディレクトリ。中に部屋のような名前があっても拾わない
+        for hidden in [".tmp.drivedownload", ".tmp.driveupload", "_workroom", ".git"] {
+            std::fs::create_dir_all(root.join(hidden).join("2026-11-02-inside")).unwrap();
+        }
+        std::fs::create_dir_all(root.join("2026-11-02-room")).unwrap();
+        std::fs::create_dir_all(root.join("acme").join("2026-11-01-report")).unwrap();
+        let labels: Vec<_> = scan(root, None).unwrap().iter().map(|r| r.label()).collect();
+        assert_eq!(labels, vec!["2026-11-02-room", "acme/2026-11-01-report"]);
+    }
+
+    #[test]
     fn create_copies_rules_and_scan_skips_templates() {
         let d = tempfile::tempdir().unwrap();
         let s = test_settings(d.path());
