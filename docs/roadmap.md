@@ -81,12 +81,20 @@
 - 対話操作（案件に絞った TUI、`案件/名前` での新規作成）は未確認
 
 ## M5 公開準備
-- [ ] README.md（インストール、シェルごとの設定、import が非公式形式に依存する旨、「Windows で Codex を使う場合、作業ルートはクラウドの仮想ドライブではなく NTFS 上に置く」旨。design.md の「ディレクトリ構成」を参照）
-- [ ] LICENSE（MIT）
-- [ ] GitHub Actions（Windows / Linux で `cargo test`、clippy、fmt）
-- [ ] Releases 用のビルド（Windows x64 / Linux x64）
-- [ ] 公開前の確認：個人のパス・メールアドレスが含まれていないか（`git log --format='%an <%ae>'` と、ユーザー名・個人フォルダ名での `rg` 検索）
-- [ ] GitHub リポジトリの作成と push は、ユーザーの確認を取ってから
+進め方：Codex が 3〜5 と README・LICENSE の下書き、Claude Code が README の推敲・レビュー・公開前の確認・コミット（`claude-codex-handoff`）。
+- [ ] README.md（日本語）：概要、インストール（`cargo install --git` / Releases）、シェルごとの設定（PowerShell / bash・zsh / nushell）、コマンドと TUI のキー操作、名前の規則（日本語可・`/` は案件の区切り・Claude の履歴の名前の衝突の検出）、設定と環境変数、`_workroom/AGENTS.md` と `rules sync`、注意事項（Windows で Codex を使うなら作業ルートは NTFS 上、import は Claude Code の非公式な内部形式に依存）
+- [ ] LICENSE（MIT。著作権者の表記はユーザーと決める）
+- [ ] Cargo.toml：`rust-version = "1.88"`（ratatui 0.30 と let チェーンのため）、keywords などのメタデータ
+- [ ] GitHub Actions（CI）：push / PR で Windows と Linux の `cargo fmt --check`・`cargo clippy --all-targets -- -D warnings`・`cargo test`。Linux で落ちるテストがあれば直す（WSL に Rust があれば手元で確認）。`GITHUB_TOKEN` の権限は最小（`contents: read`）
+- [ ] Releases：`v*` のタグの push で、Windows x64（msvc）と Linux x64（musl、静的リンク）をビルドして GitHub Releases に置く。最初は `v0.1.0`
+- [ ] 公開前の確認：コミットの作者が noreply だけか（`git log --format='%an <%ae>'`）、全ファイルと全コミットにユーザー名・個人のフォルダ名・メールアドレスが含まれないか（`git log -p` も対象）
+- [ ] GitHub リポジトリ `scndtnr/workroom` を **private** で作成して push（ユーザーの確認を取ってから）。リリース（`v0.1.0`）まで行う
+- [ ] 保護設定（public にする前に。private の無料プランでは使えないものは public 化と同時に）
+  - main のルールセット：force push と削除の禁止、CI の通過を必須に（1人で開発するので、PR のレビュー必須にはしない。ユーザーと確認）
+  - Secret scanning と push protection、Dependabot alerts / security updates、`.github/dependabot.yml`（cargo と github-actions）
+  - Private vulnerability reporting と `SECURITY.md`
+  - Actions：既定のワークフロー権限を読み取りのみに、外部からの PR のワークフローは承認制に
+- [ ] public 化はユーザーの確認を取ってから
 
 ## 未決事項
 - `wk grep` を TUI に統合するか（検索結果から部屋へ移動するなど）
