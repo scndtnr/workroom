@@ -14,3 +14,8 @@
 - Windows の crossterm では、`KeyEventKind::Press` 以外のキーイベントを無視する。
 - 描画と状態を分け、状態は単体テスト、描画は ratatui の `TestBackend` でテストする。対話操作で確認できていないことは、そうと明記して報告する。
 - マイルストーンごとに `cargo test` / `cargo clippy` / `cargo fmt --check` を通してからコミットする。
+
+## Claude Code と Codex の役割分担
+- 両方を使うときは、`claude-codex-handoff` スキル（`.claude/skills/` と `.agents/skills/` に同じものがある）に従う。
+  - Claude Code：ユーザーとのやり取り、計画、レビュー、コミット。
+  - Codex：合意した計画の実装（コード・テスト・確認のコマンド）。コミットはしない。
