@@ -77,13 +77,31 @@ pub struct DiskUsage {
     pub bytes: u64,
 }
 
-/// ファイル数と合計サイズ。メタデータだけを見て、中身は読まない
-pub fn disk_usage(path: &Path) -> DiskUsage {
+/// ファイル数と合計サイズ。除外した名前は数えず、メタデータだけを見て、中身は読まない
+pub fn disk_usage(path: &Path, exclude: &[String]) -> DiskUsage {
+    disk_usage_cancellable(path, exclude, || false).unwrap_or_default()
+}
+
+/// 中断された計算は、途中の集計を返さない。
+pub fn disk_usage_cancellable(
+    path: &Path,
+    exclude: &[String],
+    mut cancelled: impl FnMut() -> bool,
+) -> Option<DiskUsage> {
     let mut usage = DiskUsage::default();
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        if cancelled() {
+            return None;
+        }
         let Ok(read) = std::fs::read_dir(&dir) else { continue };
         for entry in read.filter_map(|e| e.ok()) {
+            if cancelled() {
+                return None;
+            }
+            if exclude.iter().any(|name| entry.file_name() == name.as_str()) {
+                continue;
+            }
             let Ok(ft) = entry.file_type() else { continue };
             if ft.is_dir() {
                 stack.push(entry.path());
@@ -93,7 +111,7 @@ pub fn disk_usage(path: &Path) -> DiskUsage {
             }
         }
     }
-    usage
+    if cancelled() { None } else { Some(usage) }
 }
 
 pub fn human_bytes(bytes: u64) -> String {
@@ -150,15 +168,42 @@ mod tests {
         fs::create_dir(p.join("docs")).unwrap();
         fs::write(p.join("docs").join("a.md"), "abc").unwrap();
         fs::create_dir(p.join("node_modules")).unwrap();
+        fs::write(p.join("node_modules").join("ignored.js"), "除外するファイル").unwrap();
+        fs::create_dir(p.join("docs").join("node_modules")).unwrap();
+        fs::write(p.join("docs").join("node_modules").join("nested.js"), "これも除外").unwrap();
         fs::write(p.join(".done"), "").unwrap();
         let exclude = vec!["node_modules".to_string()];
         let lines = tree(p, &TreeOptions { depth: 2, max_items: 10, exclude: &exclude, hide_room_files: true });
         let names: Vec<_> = lines.iter().map(|l| format!("{}{}", l.prefix, l.name)).collect();
         assert_eq!(names, vec!["├── docs", "│   └── a.md", "└── b.txt"]);
 
-        let u = disk_usage(p);
+        let u = disk_usage(p, &exclude);
         assert_eq!(u.files, 4);
         assert_eq!(u.bytes, 3 + 5 + 3);
+    }
+
+    #[test]
+    fn usage_excludes_files_by_name_too() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("keep.txt"), "123").unwrap();
+        fs::write(d.path().join("skip.txt"), "12345").unwrap();
+        assert_eq!(disk_usage(d.path(), &["skip.txt".into()]), DiskUsage { files: 1, bytes: 3 });
+    }
+
+    #[test]
+    fn cancelled_usage_does_not_return_partial_totals() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            fs::write(d.path().join(format!("{i}.txt")), "123").unwrap();
+        }
+        let mut checks = 0;
+        let usage = disk_usage_cancellable(d.path(), &[], || {
+            checks += 1;
+            checks == 3
+        });
+        assert_eq!(usage, None);
+        assert_eq!(checks, 3);
+        assert_eq!(disk_usage(d.path(), &[]), DiskUsage { files: 3, bytes: 9 });
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! TUI ピッカーの描画。状態（`State`）を読むだけで、変更はしない。
 
+use super::preview::Preview;
 use super::state::{Row, State};
 use crate::fsinfo;
 use ratatui::Frame;
@@ -13,8 +14,8 @@ pub struct ViewContext<'a> {
     /// 枠のタイトルに出す作業ルート
     pub root: &'a str,
     pub icons: bool,
-    /// 選択中の部屋のプレビュー（README の先頭）
-    pub preview: Option<&'a [String]>,
+    /// 選択中の部屋のプレビュー（届いている部分から表示する）
+    pub preview: Option<&'a Preview>,
 }
 
 const HELP: &str = "Enter 移動  ^D 完了  ^O 開く  ^S 並び順  Tab 完了済み  Alt+P 詳細  Esc 終了";
@@ -109,14 +110,44 @@ fn row_line(row: Row, icons: bool) -> Line<'static> {
 
 fn render_preview(frame: &mut Frame, ctx: &ViewContext, area: Rect) {
     let block = Block::bordered().title(" プレビュー ");
-    let lines: Vec<Line> = match ctx.preview {
-        Some(lines) => lines
-            .iter()
-            .enumerate()
-            .map(|(i, l)| if i == 0 { Line::from(l.clone()).bold() } else { Line::from(l.clone()) })
-            .collect(),
-        None => Vec::new(),
-    };
+    let mut lines = Vec::new();
+    if let Some(preview) = ctx.preview {
+        match &preview.readme {
+            Some(readme) => lines.extend(
+                readme
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| if i == 0 { Line::from(l.as_str()).bold() } else { Line::from(l.as_str()) }),
+            ),
+            None => lines.push(Line::from("README を読み込み中…").dark_gray()),
+        }
+        lines.push(Line::default());
+        match &preview.tree {
+            Some(tree) => lines.extend(tree.iter().map(|entry| {
+                let icon = if ctx.icons && !entry.more {
+                    format!("{} ", fsinfo::icon_for(&entry.name, entry.is_dir))
+                } else {
+                    String::new()
+                };
+                let name = Span::raw(format!("{icon}{}", entry.name));
+                let name = if entry.more {
+                    name.dark_gray()
+                } else if entry.is_dir {
+                    name.blue()
+                } else {
+                    name
+                };
+                let line = Line::from(vec![Span::raw(&entry.prefix), name]);
+                if entry.more { line.dark_gray() } else { line }
+            })),
+            None => lines.push(Line::from("ファイル構成を計算中…").dark_gray()),
+        }
+        lines.push(Line::default());
+        lines.push(match preview.usage {
+            Some(usage) => Line::from(format!("{} files · {}", usage.files, fsinfo::human_bytes(usage.bytes))),
+            None => Line::from("サイズを計算中…").dark_gray(),
+        });
+    }
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -171,7 +202,10 @@ mod tests {
     #[test]
     fn snapshot_list_with_preview() {
         let state = sample_state();
-        let preview = vec!["# 不具合調査".to_string(), String::new(), "- created: 2026-11-02 19:33".to_string()];
+        let preview = Preview {
+            readme: Some(vec!["# 不具合調査".to_string(), String::new(), "- created: 2026-11-02 19:33".to_string()]),
+            ..Preview::default()
+        };
         let ctx = ViewContext { root: "~/work", icons: false, preview: Some(&preview) };
         let lines = draw(&state, &ctx, 80, 8);
         assert_eq!(
@@ -182,7 +216,7 @@ mod tests {
                 "│> 26-11-02 fix-bug  不具合調査                ││                              │",
                 "│  26-11-01 acme/report  月次レポート          ││- created: 2026-11-02 19:33   │",
                 "│                                              ││                              │",
-                "│                                              ││                              │",
+                "│                                              ││ファイル構成を計算中…         │",
                 "└──────────────────────────────────────────────┘└──────────────────────────────┘",
                 "Enter 移動  ^D 完了  ^O 開く  ^S 並び順  Tab 完了済み  Alt+P 詳細  Esc 終了",
             ]
@@ -243,5 +277,93 @@ mod tests {
         let ctx = ViewContext { root: "~/work", icons: true, preview: None };
         let lines = draw(&state, &ctx, 80, 6);
         assert!(lines[2].contains(&format!("{} 26-11-02 fix-bug", fsinfo::icon_for("", true))), "{lines:#?}");
+    }
+
+    fn full_preview() -> Preview {
+        Preview {
+            readme: Some(vec!["# 不具合調査".into(), "概要".into()]),
+            tree: Some(vec![
+                fsinfo::TreeLine { prefix: "├── ".into(), name: "docs".into(), is_dir: true, more: false },
+                fsinfo::TreeLine { prefix: "│   └── ".into(), name: "a.md".into(), is_dir: false, more: false },
+                fsinfo::TreeLine {
+                    prefix: "└── ".into(), name: "… 他 2 件".into(), is_dir: false, more: true
+                },
+            ]),
+            usage: Some(fsinfo::DiskUsage { files: 3, bytes: 12698 }),
+        }
+    }
+
+    fn draw_preview(preview: &Preview, icons: bool) -> Buffer {
+        let ctx = ViewContext { root: "~/work", icons, preview: Some(preview) };
+        let mut terminal = Terminal::new(TestBackend::new(32, 11)).unwrap();
+        terminal.draw(|f| render_preview(f, &ctx, f.area())).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn snapshot_partial_preview() {
+        let preview = Preview { readme: Some(vec!["# 不具合調査".into()]), ..Preview::default() };
+        let buffer = draw_preview(&preview, false);
+        assert_eq!(
+            buffer_lines(&buffer),
+            vec![
+                "┌ プレビュー ──────────────────┐",
+                "│# 不具合調査                  │",
+                "│                              │",
+                "│ファイル構成を計算中…         │",
+                "│                              │",
+                "│サイズを計算中…               │",
+                "│                              │",
+                "│                              │",
+                "│                              │",
+                "│                              │",
+                "└──────────────────────────────┘",
+            ]
+        );
+        assert!(buffer[(1, 1)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(1, 3)].fg, Color::DarkGray);
+        assert_eq!(buffer[(1, 5)].fg, Color::DarkGray);
+        let pending = draw_preview(&Preview::default(), false);
+        assert!(buffer_lines(&pending)[1].contains("README を読み込み中…"));
+        assert_eq!(pending[(1, 1)].fg, Color::DarkGray);
+    }
+
+    #[test]
+    fn snapshot_complete_preview() {
+        let buffer = draw_preview(&full_preview(), false);
+        assert_eq!(
+            buffer_lines(&buffer),
+            vec![
+                "┌ プレビュー ──────────────────┐",
+                "│# 不具合調査                  │",
+                "│概要                          │",
+                "│                              │",
+                "│├── docs                      │",
+                "││   └── a.md                  │",
+                "│└── … 他 2 件                 │",
+                "│                              │",
+                "│3 files · 12.4 KB             │",
+                "│                              │",
+                "└──────────────────────────────┘",
+            ]
+        );
+        assert!(buffer[(1, 1)].modifier.contains(Modifier::BOLD));
+        assert!(!buffer[(1, 2)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(5, 4)].fg, Color::Blue);
+        assert_eq!(buffer[(1, 6)].fg, Color::DarkGray);
+    }
+
+    #[test]
+    fn preview_tree_icons_follow_configuration() {
+        let preview = full_preview();
+        let buffer = draw_preview(&preview, true);
+        let lines = buffer_lines(&buffer);
+        assert!(lines[4].contains(&format!("├── {} docs", fsinfo::icon_for("docs", true))), "{lines:#?}");
+        assert!(lines[5].contains(&format!("│   └── {} a.md", fsinfo::icon_for("a.md", false))), "{lines:#?}");
+        assert_eq!(lines[6], "│└── … 他 2 件                 │");
+        assert_eq!(buffer[(5, 4)].fg, Color::Blue);
+        let plain = buffer_lines(&draw_preview(&preview, false)).join("\n");
+        assert!(!plain.contains(fsinfo::icon_for("docs", true)));
+        assert!(!plain.contains(fsinfo::icon_for("a.md", false)));
     }
 }

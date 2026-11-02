@@ -7,19 +7,20 @@
 //! 画面を表示している間は標準エラーに何も書かない（画面が崩れるため）。
 //! 部屋の作成・移動のメッセージは、端末を元に戻してから呼び出し元が出す。
 
+mod preview;
 pub mod state;
 mod view;
 
 use crate::config::Settings;
 use crate::history::History;
-use crate::{fsinfo, room, shell};
+use crate::{room, shell};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::ListState;
 use state::{Action, Effect, Item, State};
-use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// ピッカーの結果
 #[derive(Debug, PartialEq, Eq)]
@@ -87,6 +88,7 @@ pub fn run(settings: &Settings, query: &str) -> Result<Outcome> {
     let mut state = State::new(load_items(settings)?, query);
     // ratatui::try_init はパニック時にも端末を元に戻すフックを入れる
     let mut terminal = ratatui::try_init()?;
+    preview::install_panic_hook();
     let result = event_loop(&mut terminal, &mut state, settings);
     ratatui::try_restore()?;
     result
@@ -95,16 +97,27 @@ pub fn run(settings: &Settings, query: &str) -> Result<Outcome> {
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, state: &mut State, settings: &Settings) -> Result<Outcome> {
     let root = settings.root.display().to_string();
     let mut list_state = ListState::default();
-    let mut previews: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    let mut previews = preview::Previews::new(settings.config.exclude.clone());
+    let mut redraw = true;
     loop {
-        let preview = state.selected_item().map(|item| {
-            previews.entry(item.room.path.clone()).or_insert_with(|| fsinfo::readme_head(&item.room.path, 30)).clone()
-        });
-        let ctx = view::ViewContext { root: &root, icons: settings.config.icons, preview: preview.as_deref() };
-        terminal.draw(|f| view::render(f, state, &ctx, &mut list_state))?;
+        let path = state.selected_item().filter(|_| state.show_preview()).map(|item| item.room.path.as_path());
+        previews.select(path);
+        redraw |= previews.poll();
+        if redraw {
+            let preview = path.and_then(|path| previews.get(path));
+            let ctx = view::ViewContext { root: &root, icons: settings.config.icons, preview };
+            terminal.draw(|f| view::render(f, state, &ctx, &mut list_state))?;
+            redraw = false;
+        }
 
-        let Event::Key(key) = event::read()? else { continue };
+        if !event::poll(Duration::from_millis(30))? {
+            continue;
+        }
+        let event = event::read()?;
+        redraw = matches!(event, Event::Resize(..));
+        let Event::Key(key) = event else { continue };
         let Some(action) = action_for(key) else { continue };
+        redraw = true;
         match state.apply(action) {
             Effect::None => {}
             Effect::Quit => return Ok(Outcome::Quit),
