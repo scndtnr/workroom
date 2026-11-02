@@ -162,19 +162,16 @@ fn ls_hides_done_rooms_unless_all() {
 }
 
 #[test]
-fn query_without_subcommand_moves_to_unique_match() {
+fn picker_requires_terminal() {
     let env = Env::new();
     env.run(&["new", "alpha", "--date", "2026-11-01"]);
-    env.run(&["new", "alpine", "--date", "2026-11-02"]);
-
-    let (out, lines) = env.run_cwd(&["alpha"]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(lines, vec![env.root.join("2026-11-01-alpha").display().to_string()]);
-
-    let (out, lines) = env.run_cwd(&["alp"]);
-    assert!(!out.status.success());
-    assert!(stderr(&out).contains("候補が複数あります"));
-    assert!(lines.is_empty());
+    // テストでは標準入出力が端末ではないので、ピッカーは開かずに案内を出す
+    for args in [&[][..], &["alpha"], &["alpha", "ls"]] {
+        let (out, lines) = env.run_cwd(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&out).contains("ピッカーは端末でのみ使えます"), "{args:?}");
+        assert!(lines.is_empty(), "{args:?}");
+    }
 }
 
 #[test]
@@ -187,9 +184,8 @@ fn drive_sync_temp_dirs_are_not_projects() {
     assert_eq!(stdout(&env.run(&["names"])), "2026-11-02-real\n");
     let out = stdout(&env.run(&["ls", "-a"]));
     assert!(!out.contains(".tmp.drive") && !out.contains("ghost"), "{out}");
-    let (out, lines) = env.run_cwd(&["ghost"]);
-    assert!(!out.status.success());
-    assert!(lines.is_empty());
+    let out = env.run(&["done", "ghost"]);
+    assert!(stderr(&out).contains("見つかりません"), "{}", stderr(&out));
 }
 
 #[test]

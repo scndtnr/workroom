@@ -203,8 +203,20 @@ pub fn create(settings: &Settings, req: &NewRoom) -> Result<(PathBuf, bool)> {
     Ok((path, true))
 }
 
+/// 名前から slug を作る（小文字にし、`_` と空白を `-` に置き換える）。結果が slug として正しいとは限らない
+pub fn derive_slug(s: &str) -> String {
+    let lowered = s.trim().to_lowercase();
+    let re = regex::Regex::new(r"[_\s]+").expect("static regex");
+    re.replace_all(&lowered, "-").into_owned()
+}
+
 pub fn set_done(room: &Room, done: bool) -> Result<()> {
-    let marker = room.path.join(DONE_MARKER);
+    set_done_at(&room.path, done)
+}
+
+/// 部屋のパスを指定して完了マーカーを付ける・外す
+pub fn set_done_at(path: &Path, done: bool) -> Result<()> {
+    let marker = path.join(DONE_MARKER);
     if done {
         write_text(&marker, &format!("{}\n", Local::now().format("%Y-%m-%d %H:%M")))?;
     } else if marker.exists() {
@@ -230,6 +242,14 @@ mod tests {
         assert!(!is_valid_slug("Bad_Slug"));
         assert!(!is_valid_slug("日本語"));
         assert!(!is_valid_slug(""));
+    }
+
+    #[test]
+    fn slug_derivation() {
+        assert_eq!(derive_slug("novel_review"), "novel-review");
+        assert_eq!(derive_slug("My Task"), "my-task");
+        assert_eq!(derive_slug(" Fix  Bug "), "fix-bug");
+        assert!(!is_valid_slug(&derive_slug("不具合")));
     }
 
     #[test]

@@ -45,7 +45,7 @@ pub fn run(settings: &Settings, args: &ImportArgs) -> Result<PathBuf> {
     };
     let slug = match args.slug {
         Some(s) => s.to_string(),
-        None => derive_slug(&rest),
+        None => room::derive_slug(&rest),
     };
     if !room::is_valid_slug(&slug) {
         bail!("slug を英小文字・数字・ハイフンで指定してください: workroom import \"{}\" <slug> [説明]", src.display());
@@ -90,12 +90,6 @@ pub fn run(settings: &Settings, args: &ImportArgs) -> Result<PathBuf> {
     std::fs::remove_dir_all(&src).with_context(|| format!("移行元を削除できません: {}", src.display()))?;
     eprintln!("完了しました: {}", dest.display());
     Ok(dest)
-}
-
-fn derive_slug(s: &str) -> String {
-    let lowered = s.to_lowercase();
-    let re = Regex::new(r"[_\s]+").expect("static regex");
-    re.replace_all(&lowered, "-").into_owned()
 }
 
 /// Windows の `\\?\` 付きパスを通常のパスに戻す
@@ -223,12 +217,6 @@ fn posix_style(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn slug_derivation() {
-        assert_eq!(derive_slug("novel_review"), "novel-review");
-        assert_eq!(derive_slug("My Task"), "my-task");
-    }
 
     #[test]
     fn project_key() {

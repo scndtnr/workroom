@@ -44,6 +44,28 @@ pub fn write_cwd_file(cwd_file: Option<&Path>, dest: &Path, then: Option<&str>) 
     Ok(())
 }
 
+/// ファイラーで開く。TUI の画面を崩さないよう、起動したプログラムの出力は捨てる
+pub fn open_in_filer(path: &Path) -> Result<()> {
+    use anyhow::Context;
+    use std::process::{Command, Stdio};
+    let program = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    // explorer は成功しても終了コード 1 を返すことがあるので、終了コードは見ない
+    Command::new(program)
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("{program} を起動できません: {}", path.display()))?;
+    Ok(())
+}
+
 pub fn validate_cmd_name(name: &str) -> Result<()> {
     let ok = !name.is_empty()
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')

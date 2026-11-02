@@ -1,7 +1,7 @@
 //! workroom: AI エージェントに日付付きの作業部屋を用意する CLI。
 //! 設計は docs/design.md、進捗は docs/roadmap.md を参照。
 
-// TUI（M2 以降）で使う関数がまだ呼ばれていないため
+// プレビュー（M3）と rules sync（M4）で使う関数がまだ呼ばれていないため
 #![allow(dead_code)]
 
 mod config;
@@ -13,8 +13,9 @@ mod ls;
 mod room;
 mod rules;
 mod shell;
+mod tui;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Arg, ArgAction, Args, Command, CommandFactory, FromArgMatches, Parser, Subcommand};
 use config::Settings;
 use std::path::{Path, PathBuf};
@@ -250,7 +251,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 Some(q) => room::resolve(&settings, Some(q))?.path,
                 None => room::resolve(&settings, None).map(|r| r.path).unwrap_or_else(|_| settings.root.clone()),
             };
-            open_in_filer(&path)?;
+            shell::open_in_filer(&path)?;
         }
         Cmd::Root => {
             room::ensure_root(&settings)?;
@@ -288,16 +289,26 @@ fn enter(settings: &Settings, cwd_file: Option<&Path>, path: &Path, then: Option
     shell::write_cwd_file(cwd_file, path, then)
 }
 
-/// サブコマンドなし：TUI ピッカー（M2 で実装予定）。それまでは、検索語に1件だけ一致すれば移動する
+/// サブコマンドなし：TUI ピッカー（検索語があれば入力済みの状態で開く）
 fn pick(cwd_file: Option<&Path>, query: &str) -> Result<ExitCode> {
     let settings = Settings::load()?;
-    if query.is_empty() {
-        eprintln!("TUI ピッカーは未実装です。`wk <検索語>` で移動するか、`wk ls` で一覧を表示してください");
+    if !tui::has_terminal() {
+        eprintln!("workroom: ピッカーは端末でのみ使えます。一覧は `wk ls` で表示できます");
         return Ok(ExitCode::from(2));
     }
-    let room = room::resolve(&settings, Some(query))?;
-    eprintln!("移動します: {}", room.label());
-    enter(&settings, cwd_file, &room.path, None)?;
+    // 端末を元に戻してから、メッセージの表示と移動先の書き出しを行う
+    match tui::run(&settings, query)? {
+        tui::Outcome::Quit => {}
+        tui::Outcome::Enter(path) => enter(&settings, cwd_file, &path, None)?,
+        tui::Outcome::Create(slug) => {
+            let req = room::NewRoom { slug: &slug, description: "", project: None, date: room::today(&settings) };
+            let (path, created) = room::create(&settings, &req)?;
+            if created {
+                eprintln!("作成しました: {}", path.display());
+            }
+            enter(&settings, cwd_file, &path, None)?;
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -305,22 +316,6 @@ fn set_done(settings: &Settings, name: Option<&str>, done: bool) -> Result<()> {
     let r = room::resolve(settings, name)?;
     room::set_done(&r, done)?;
     eprintln!("{}: {}", if done { "完了にしました" } else { "完了を外しました" }, r.label());
-    Ok(())
-}
-
-fn open_in_filer(path: &Path) -> Result<()> {
-    let program = if cfg!(windows) {
-        "explorer"
-    } else if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    // explorer は成功しても終了コード 1 を返すことがあるので、終了コードは見ない
-    std::process::Command::new(program)
-        .arg(path)
-        .spawn()
-        .with_context(|| format!("{program} を起動できません: {}", path.display()))?;
     Ok(())
 }
 
