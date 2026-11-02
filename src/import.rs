@@ -81,9 +81,9 @@ pub fn run(settings: &Settings, args: &ImportArgs) -> Result<PathBuf> {
         )?;
     }
     if dest.join(AGENTS).exists() {
-        eprintln!("警告: AGENTS.md が既にあるため、ルートのルールへの案内は追加していません");
+        eprintln!("警告: AGENTS.md が既にあるため、ルールのテンプレートはコピーしていません");
     } else {
-        room::write_text(&dest.join(AGENTS), &room::agent_pointer(args.project.is_some()))?;
+        crate::rules::write_room_rules(settings, &dest, args.project)?;
     }
 
     copy_claude_project(settings, &src, &dest)?;

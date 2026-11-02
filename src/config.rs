@@ -26,7 +26,7 @@ pub struct Config {
     pub icons: bool,
     /// tree 表示・検索・サイズ計算から除外する名前
     pub exclude: Vec<String>,
-    /// ルートの AGENTS.md を初めて作るときに使うテンプレートファイル
+    /// 部屋の AGENTS.md にコピーするルールのテンプレート（既定は `<root>/_workroom/AGENTS.md`）
     pub agent_rules: Option<String>,
 }
 
@@ -130,7 +130,8 @@ icons = false
 # tree 表示・検索・サイズ計算から除外する名前
 exclude = ["node_modules", ".venv", "__pycache__", ".git"]
 
-# ルートの AGENTS.md を初めて作るときに使うテンプレート（省略時は内蔵の文面）
+# 部屋の AGENTS.md にコピーするルールのテンプレート（既定は <root>/_workroom/AGENTS.md）
+# ファイルがなければ、内蔵の文面から作る
 # agent_rules = '~/.config/workroom/AGENTS.md'
 "#,
         root.display()

@@ -14,8 +14,6 @@ pub const README: &str = "README.md";
 pub const AGENTS: &str = "AGENTS.md";
 pub const DONE_MARKER: &str = ".done";
 
-const DEFAULT_AGENT_RULES: &str = include_str!("../templates/AGENTS.md");
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Room {
     /// ディレクトリ名（`YYYY-MM-DD-<slug>`）
@@ -156,24 +154,15 @@ pub fn parse_date(s: &str) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").with_context(|| format!("日付は YYYY-MM-DD で指定してください: {s}"))
 }
 
-/// ルートと、ルールの本体（ルートの AGENTS.md）を用意する
+/// ルートと、ルールのテンプレート（`_workroom/AGENTS.md`）を用意する
 pub fn ensure_root(settings: &Settings) -> Result<()> {
     let root = &settings.root;
     if !root.exists() {
         std::fs::create_dir_all(root).with_context(|| format!("作れません: {}", root.display()))?;
         eprintln!("作業ルートを作成しました: {}", root.display());
     }
-    let agents = root.join(AGENTS);
-    if !agents.exists() {
-        let rules = match &settings.config.agent_rules {
-            Some(p) => {
-                let p = crate::config::expand_home(p);
-                std::fs::read_to_string(&p).with_context(|| format!("agent_rules を読めません: {}", p.display()))?
-            }
-            None => DEFAULT_AGENT_RULES.to_string(),
-        };
-        write_text(&agents, &rules)?;
-    }
+    crate::rules::ensure_template(settings)?;
+    crate::rules::warn_root_agents(settings);
     Ok(())
 }
 
@@ -184,19 +173,6 @@ pub fn ensure_project(settings: &Settings, project: &str) -> Result<PathBuf> {
     let dir = settings.root.join(project);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
-}
-
-/// 各部屋に置く AGENTS.md（Codex は Git 管理外だと親の AGENTS.md を読まないため、案内を置く）
-pub fn agent_pointer(in_project: bool) -> String {
-    let mut s = String::from(
-        "# ルール\n\nこの作業ディレクトリのルールは、親ディレクトリの AGENTS.md に書かれている。\n作業を始める前に必ず以下を読み、それに従うこと。\n\n",
-    );
-    if in_project {
-        s.push_str("- `../../AGENTS.md`（全体のルール）\n- `../AGENTS.md`（案件のルール。存在する場合）\n");
-    } else {
-        s.push_str("- `../AGENTS.md`\n");
-    }
-    s
 }
 
 pub struct NewRoom<'a> {
@@ -223,7 +199,7 @@ pub fn create(settings: &Settings, req: &NewRoom) -> Result<(PathBuf, bool)> {
     std::fs::create_dir(&path)?;
     let title = if req.description.is_empty() { req.slug } else { req.description };
     write_text(&path.join(README), &format!("# {title}\n\n- created: {}\n", Local::now().format("%Y-%m-%d %H:%M")))?;
-    write_text(&path.join(AGENTS), &agent_pointer(req.project.is_some()))?;
+    crate::rules::write_room_rules(settings, &path, req.project)?;
     Ok((path, true))
 }
 
@@ -266,5 +242,48 @@ mod tests {
         assert!(parse_room_name("novel_review").is_none());
         assert!(parse_room_name("2026-13-40-x").is_none());
         assert!(parse_room_name("日本語日本語日本語").is_none());
+    }
+
+    fn test_settings(root: &Path) -> Settings {
+        Settings {
+            config: crate::config::Config::default(),
+            config_path: root.join("config.toml"),
+            root: root.join("作業ルート"),
+            state_dir: root.join("state"),
+            claude_dir: root.join("claude"),
+        }
+    }
+
+    #[test]
+    fn create_copies_rules_and_scan_skips_templates() {
+        let d = tempfile::tempdir().unwrap();
+        let s = test_settings(d.path());
+        let date = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        let (a, created) = create(&s, &NewRoom { slug: "a", description: "説明", project: None, date }).unwrap();
+        assert!(created);
+        assert!(s.root.join("_workroom").join(AGENTS).is_file());
+
+        let project_rules = s.root.join("acme").join("_workroom");
+        std::fs::create_dir_all(&project_rules).unwrap();
+        std::fs::write(project_rules.join(AGENTS), "# 案件のルール\n").unwrap();
+        let (b, _) = create(&s, &NewRoom { slug: "b", description: "", project: Some("acme"), date }).unwrap();
+
+        let rules_a = std::fs::read_to_string(a.join(AGENTS)).unwrap();
+        let rules_b = std::fs::read_to_string(b.join(AGENTS)).unwrap();
+        assert!(crate::rules::is_unmodified(&rules_a));
+        assert!(crate::rules::is_unmodified(&rules_b));
+        assert!(rules_a.contains("# 作業ディレクトリのルール"));
+        assert!(!rules_a.contains("# 案件のルール"));
+        assert!(rules_b.contains("# 作業ディレクトリのルール") && rules_b.ends_with("# 案件のルール\n"));
+
+        let rooms = scan(&s.root, None).unwrap();
+        let labels: Vec<_> = rooms.iter().map(|r| r.label()).collect();
+        assert_eq!(labels, vec!["acme/2026-11-02-b", "2026-11-02-a"]);
+        assert_eq!(rooms[1].description, "説明");
+        assert_eq!(rooms[0].description, "");
+
+        // 既にあれば作らない
+        let (again, created) = create(&s, &NewRoom { slug: "a", description: "", project: None, date }).unwrap();
+        assert_eq!((again, created), (a, false));
     }
 }

@@ -35,8 +35,10 @@ Git 管理するほどでもない調査・作業の場所を、すぐに作れ�
 
 - Codex は、Git 管理外のディレクトリでは親の AGENTS.md を自動では読まない。さらにサンドボックスの設定によっては、部屋の外のファイルを読めない場合がある（`../AGENTS.md` を読むよう案内する方式では、ルールが届かなかった例があった）。
 - Claude Code は親ディレクトリの AGENTS.md も読み込む。テンプレートを `<root>/AGENTS.md` に置くと、部屋のコピーと二重に読み込まれる。そこで、自動では読まれない `_workroom/AGENTS.md` に置く。
-- コピーした内容の先頭に、生成元の識別子を入れる（例：`<!-- workroom:rules sha256=... -->`）。
-  - `workroom rules sync` を実行すると、生成後に手で変更されていない部屋だけを、最新のテンプレートで更新する。
+- コピーした内容の1行目に、生成元の識別子を入れる（`<!-- workroom:rules sha256=<本文の sha256>（…） -->`）。本文は BOM なし・改行 LF にそろえる。
+  - `workroom rules sync` を実行すると、生成後に手で変更されていない部屋（本文の sha256 が識別子と一致するもの）だけを、最新のテンプレートで更新する。
+  - 以前の PowerShell 版（`wk sync-rules`）が作った、`<!-- wk:` で始まる AGENTS.md も「生成されたもの」とみなし、置き換えの対象にする（ハッシュがないので、手で変更されたかは判別しない）。
+- 作業ルート直下に AGENTS.md があると、Claude Code が部屋のコピーと二重に読み込む。自動では移動せず、部屋を作るたびに警告する。
 - 案件の部屋には、全体のテンプレートの後ろに、案件のテンプレート（あれば）を連結してコピーする。
 - テンプレートの場所は設定 `agent_rules` で変えられる。ファイルがなければ、内蔵の文面（`templates/AGENTS.md`）から作る。
 
@@ -50,6 +52,9 @@ Git 管理するほどでもない調査・作業の場所を、すぐに作れ�
 
 - TUI の描画と標準出力の取り込みがぶつからず、PowerShell / nushell / bash / zsh で同じ方式で動く（yazi の `--cwd-file` と同じ考え方）。
 - `claude` / `codex` を実行ファイル側ではなくシェル側で起動するのは、Windows の npm 製の起動スクリプト（`codex.ps1` / `codex.cmd`）を、シェルの通常の解決順で見つけるため。
+- ラッパー関数（`init` の出力）は ASCII だけで書く。PowerShell は外部コマンドの出力を `[Console]::OutputEncoding` で読むため、日本語版 Windows の既定（shift_jis）では UTF-8 の日本語が化け、`Invoke-Expression` が構文エラーになる（`-NoProfile` で確認済み）。
+- PowerShell のラッパーは、実行ファイルを `Get-Command -CommandType Application` で探して呼ぶ（関数名を `workroom` にしても自分自身を呼ばないように）。既定の関数名は `wk`。
+- nushell 0.100 では、外部コマンドが 0 以外で終わるとエラーになり関数が止まる。一時ファイルを消すため、呼び出しを `try` で囲む。
 - nushell の `source` には、解析時点で決まっているパスが必要になる。そのため、`workroom init nu --cmd wk | save -f <file>` で一度ファイルに保存し、config.nu から `source <file>` する（zoxide と同じ方式）。
 
 ## コマンド
