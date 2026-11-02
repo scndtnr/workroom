@@ -14,7 +14,7 @@
 ## M1 CLI とシェル連携の確認（済）
 - [x] `main.rs`：clap で CLI を作る（`--cwd-file` はグローバル引数で、ヘルプには出さない）
   - `args_conflicts_with_subcommands` は使わない。`--cwd-file` も「引数」とみなされ、`wk --cwd-file f new x` の `new` が検索語になってしまうため。
-    代わりに、サブコマンド名と一致しない語を検索語として受け取る（`done` などを検索したいときは `wk -- done`）。
+    代わりに、サブコマンド名と一致しない語を検索語として受け取る。`done` などを検索したいときは `wk -- done`（PowerShell は素の `--` を自分で消費し、`wk -- done` が「カレントの部屋を完了にする」になるので、`wk '--' done` と引用する。確認済み）。
   - ヘルプは日本語（見出し・テンプレート・`-h` の説明を、サブコマンドにも再帰的に設定）。clap 自身の解析エラー（`error: unexpected argument ...`）は英語のまま。
 - [x] `init` / `root` / `new` / `ls` / `done` / `undone` / `open` / `config` / 補完用の非公開コマンド `names`
   - `grep` / `import` も CLI につないだ（補完の候補に出ているため）。統合テストは M4 で書く。
@@ -30,7 +30,7 @@
     - `Register-ArgumentCompleter -Native` は関数にも効く（`TabExpansion2` で確認）
   - nushell 0.100（`nu -n`）：new / root / 検索語 / 失敗時 / `-c`（偽の `claude.cmd` で確認）/ `try` の中でも出力が流れる
     - 失敗時に関数が止まり一時ファイルが残っていた → `try` で囲んだ
-  - bash（Git Bash）：new / root / 失敗時。`-c` は `command claude` が関数を飛ばすため、偽物では確認できていない
+  - bash（Git Bash）：new / root / 失敗時 / `-c`（PATH の先頭に置いた偽の `claude` で確認）
   - 本物の `claude` / `codex` の起動と、端末（Herdr）上での対話的な動作は未確認
 - [x] 統合テスト（`tests/cli.rs`）：`WORKROOM_*` を一時ディレクトリに向けて実行ファイルを動かす（11件）
 - ratatui を 0.30 に上げた（clap の `unicode` 機能と `unicode-width` の版がぶつかったため。TUI はまだ書いていない）
