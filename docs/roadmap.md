@@ -61,10 +61,13 @@
 - [x] `icons = true` で Nerd Font のアイコンを表示する（一覧とプレビューの tree）
 - Herdr（PowerShell）での対話操作をユーザーが確認した（2026-11-02）：プレビューの表示、素早いスクロール、3000 ファイルの部屋（ラグなし）
 
-## M4 rules sync・grep・import の仕上げ
-- [ ] `rules sync`（`rules::is_replaceable` で判定する。手で変更された部屋は更新しない）
+## M4 rules sync・grep・import の仕上げ（済）
+実装は Codex、レビューとコミットは Claude Code。
+- [x] `rules sync [--dry-run]`（`rules::is_replaceable` で判定する。手で変更された部屋は更新しない。テンプレートがなければエラー）
   - PowerShell 版が作った `<!-- wk:` で始まる AGENTS.md も「生成されたもの」とみなし、置き換えの対象にする
-- [ ] `grep`、`import` の統合テストを書く（Claude のデータは `WORKROOM_CLAUDE_DIR` で一時ディレクトリへ）
+- [x] `grep`、`import` の統合テストを書く（Claude のデータは `WORKROOM_CLAUDE_DIR` で一時ディレクトリへ）。既存の実装に修正は不要だった
+  - grep は rg がある場合（PATH になければ飛ばす）と、ない場合（PATH を空にして内蔵の検索）の両方
+- 切り替えのリハーサル（2026-11-02）：本番のルートから AGENTS.md だけを一時フォルダにコピーし、ルートの AGENTS.md を `_workroom/` に置いて `rules sync` を実行した。ps1 版のコピー5部屋がすべて更新され、本文はテンプレートと一致し、2回目は「変更なし 5件」
 
 ## M5 公開準備
 - [ ] README.md（インストール、シェルごとの設定、import が非公式形式に依存する旨、「Windows で Codex を使う場合、作業ルートはクラウドの仮想ドライブではなく NTFS 上に置く」旨。design.md の「ディレクトリ構成」を参照）

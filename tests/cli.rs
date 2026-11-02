@@ -37,6 +37,12 @@ impl Env {
         self.cmd().args(args).output().unwrap()
     }
 
+    fn write_config(&self, text: &str) {
+        let dir = self.base.join("config");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("config.toml"), text).unwrap();
+    }
+
     /// `--cwd-file` 付きで実行し、書き出された行を返す
     fn run_cwd(&self, args: &[&str]) -> (Output, Vec<String>) {
         self.run_cwd_in(&self.base, args)
@@ -235,6 +241,10 @@ fn init_prints_wrapper_for_each_shell() {
         let s = stdout(&out);
         assert!(s.contains("wr") && !s.contains("__CMD__"), "{shell}");
         assert!(s.contains("--cwd-file"), "{shell}");
+        assert!(s.is_ascii(), "{shell}");
+        if shell == "pwsh" {
+            assert!(s.contains("'rules'"));
+        }
     }
     assert!(!env.run(&["init", "pwsh", "--cmd", "a;b"]).status.success());
     // 設定ファイルが壊れていても init は動く
@@ -251,4 +261,349 @@ fn help_is_japanese() {
     assert!(out.contains("使い方") && out.contains("コマンド:") && out.contains("ヘルプを表示する"), "{out}");
     let out = stdout(&env.run(&["new", "--help"]));
     assert!(out.contains("引数:") && out.contains("オプション:"), "{out}");
+    for args in [&["rules", "--help"][..], &["rules", "sync", "--help"]] {
+        let result = env.run(args);
+        assert!(result.status.success(), "{}", stderr(&result));
+        let out = stdout(&result);
+        assert!(out.contains("使い方:") && out.contains("オプション:") && out.contains("ヘルプを表示する"), "{out}");
+        assert!(!out.contains("Usage:") && !out.contains("Options:"), "{out}");
+    }
+    let out = stdout(&env.run(&["rules", "--help"]));
+    assert!(out.contains("コマンド:") && out.contains("sync"), "{out}");
+    let out = stdout(&env.run(&["rules", "sync", "--help"]));
+    assert!(out.contains("--dry-run") && out.contains("ファイルを書かずに"), "{out}");
+}
+
+#[test]
+fn rules_sync_updates_only_replaceable_rooms_and_can_preview() {
+    let env = Env::new();
+    let template = env.root.join("_workroom").join("AGENTS.md");
+    fs::create_dir_all(template.parent().unwrap()).unwrap();
+    fs::write(&template, "# 全体の旧ルール\n").unwrap();
+    for slug in ["generated", "edited"] {
+        let out = env.run(&["new", slug, "--date", "2026-11-02"]);
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    let generated = env.root.join("2026-11-02-generated");
+    fs::write(generated.join(".done"), "完了\n").unwrap();
+    let edited = env.root.join("2026-11-02-edited").join("AGENTS.md");
+    let edited_text = format!("{}- 手で追記\n", fs::read_to_string(&edited).unwrap());
+    fs::write(&edited, &edited_text).unwrap();
+
+    let project_template = env.root.join("acme").join("_workroom").join("AGENTS.md");
+    fs::create_dir_all(project_template.parent().unwrap()).unwrap();
+    fs::write(&project_template, "# 案件の旧ルール\n").unwrap();
+    let out = env.run(&["new", "report", "-p", "acme", "--date", "2026-11-01"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    for slug in ["legacy", "missing", "manual"] {
+        fs::create_dir(env.root.join(format!("2026-11-02-{slug}"))).unwrap();
+    }
+    let legacy = env.root.join("2026-11-02-legacy").join("AGENTS.md");
+    fs::write(&legacy, "\u{feff}<!-- wk: コピー -->\r\n# 古いルール\r\n").unwrap();
+    let manual = env.root.join("2026-11-02-manual").join("AGENTS.md");
+    fs::write(&manual, "# 手で作成したルール\n").unwrap();
+    let missing = env.root.join("2026-11-02-missing").join("AGENTS.md");
+
+    fs::write(&template, "\u{feff}# 全体の新ルール\r\n\r\n").unwrap();
+    fs::write(&project_template, "\u{feff}# 案件の新ルール\r\n").unwrap();
+    let out = env.run(&["new", "unchanged", "--date", "2026-11-02"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let unchanged = env.root.join("2026-11-02-unchanged").join("AGENTS.md");
+    let report = env.root.join("acme").join("2026-11-01-report").join("AGENTS.md");
+    let before: Vec<_> = [
+        generated.join("AGENTS.md"),
+        generated.join(".done"),
+        edited.clone(),
+        legacy.clone(),
+        manual.clone(),
+        missing.clone(),
+        unchanged.clone(),
+        report.clone(),
+        template.clone(),
+        project_template.clone(),
+    ]
+    .into_iter()
+    .map(|path| {
+        let bytes = fs::read(&path).ok();
+        (path, bytes)
+    })
+    .collect();
+
+    let (out, cwd) = env.run_cwd(&["rules", "sync", "--dry-run"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(out.stdout.is_empty() && cwd.is_empty());
+    let summary = stderr(&out);
+    assert!(
+        summary.contains("更新する予定 3件 / 作成する予定 1件 / 変更なし 1件 / 手の変更のため対象外 2件"),
+        "{summary}"
+    );
+    for label in ["2026-11-02-generated", "2026-11-02-legacy", "acme/2026-11-01-report"] {
+        assert!(summary.contains(&format!("更新する予定: {label}")), "{summary}");
+    }
+    assert!(summary.contains("作成する予定: 2026-11-02-missing"), "{summary}");
+    for (path, bytes) in &before {
+        assert_eq!(&fs::read(path).ok(), bytes, "{}", path.display());
+    }
+
+    let (out, cwd) = env.run_cwd(&["rules", "sync"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(out.stdout.is_empty() && cwd.is_empty());
+    let summary = stderr(&out);
+    assert!(summary.contains("更新 3件 / 作成 1件 / 変更なし 1件 / 手の変更のため対象外 2件"), "{summary}");
+    for label in ["2026-11-02-generated", "2026-11-02-legacy", "acme/2026-11-01-report"] {
+        assert!(summary.contains(&format!("更新: {label}")), "{summary}");
+    }
+    assert!(summary.contains("作成: 2026-11-02-missing"), "{summary}");
+    for label in ["2026-11-02-manual", "2026-11-02-edited"] {
+        assert!(summary.contains(&format!("手の変更のため対象外: {label}")), "{summary}");
+    }
+    let expected = fs::read(&unchanged).unwrap();
+    for path in [generated.join("AGENTS.md"), legacy, missing] {
+        assert_eq!(fs::read(path).unwrap(), expected);
+    }
+    let project_rules = fs::read_to_string(report).unwrap();
+    assert!(project_rules.starts_with("<!-- workroom:rules sha256="));
+    assert!(project_rules.ends_with("# 全体の新ルール\n\n# 案件の新ルール\n"));
+    assert!(!project_rules.contains('\r') && !project_rules.contains('\u{feff}'));
+    assert_eq!(fs::read_to_string(edited).unwrap(), edited_text);
+    assert_eq!(fs::read_to_string(manual).unwrap(), "# 手で作成したルール\n");
+    assert_eq!(fs::read_to_string(generated.join(".done")).unwrap(), "完了\n");
+    assert_eq!(fs::read_to_string(template).unwrap(), "\u{feff}# 全体の新ルール\r\n\r\n");
+    assert_eq!(fs::read_to_string(project_template).unwrap(), "\u{feff}# 案件の新ルール\r\n");
+
+    let out = env.run(&["rules", "sync"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("更新 0件 / 作成 0件 / 変更なし 5件 / 手の変更のため対象外 2件"), "{}", stderr(&out));
+}
+
+#[test]
+fn rules_sync_requires_template_and_guides_legacy_root_migration() {
+    let env = Env::new();
+    let room = env.root.join("2026-11-02-legacy");
+    fs::create_dir_all(&room).unwrap();
+    fs::write(env.root.join("AGENTS.md"), "# ルートのルール\n").unwrap();
+    let agents = room.join("AGENTS.md");
+    let legacy = "<!-- wk: コピー -->\n# 古いルール\n";
+    fs::write(&agents, legacy).unwrap();
+    for args in [&["rules", "sync", "--dry-run"][..], &["rules", "sync"]] {
+        let (out, cwd) = env.run_cwd(args);
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty() && cwd.is_empty());
+        let error = stderr(&out);
+        assert!(error.contains("テンプレートを読めません"), "{error}");
+        assert!(error.contains(&env.root.join("AGENTS.md").display().to_string()), "{error}");
+        assert!(error.contains("_workroom/AGENTS.md へ移してから実行してください"), "{error}");
+        assert!(!env.root.join("_workroom").exists());
+        assert_eq!(fs::read_to_string(&agents).unwrap(), legacy);
+        assert_eq!(fs::read_to_string(env.root.join("AGENTS.md")).unwrap(), "# ルートのルール\n");
+    }
+}
+
+#[test]
+fn rules_sync_does_not_create_missing_root() {
+    let env = Env::new();
+    for args in [&["rules", "sync", "--dry-run"][..], &["rules", "sync"]] {
+        let out = env.run(args);
+        assert!(!out.status.success());
+        assert!(stderr(&out).contains("テンプレートを読めません"), "{}", stderr(&out));
+        assert!(!env.root.exists());
+        assert!(!env.base.join("state").exists());
+    }
+}
+
+#[test]
+fn rules_sync_uses_configured_template_and_requires_it_to_exist() {
+    let env = Env::new();
+    let custom = env.base.join("custom-rules.md");
+    env.write_config(&format!("agent_rules = {}\n", serde_json::to_string(&custom).unwrap()));
+    let room = env.root.join("2026-11-02-room");
+    fs::create_dir_all(&room).unwrap();
+    let default = env.root.join("_workroom").join("AGENTS.md");
+    fs::create_dir(default.parent().unwrap()).unwrap();
+    fs::write(&default, "# 既定の場所のルール\n").unwrap();
+    for args in [&["rules", "sync", "--dry-run"][..], &["rules", "sync"]] {
+        let out = env.run(args);
+        assert!(!out.status.success());
+        assert!(stderr(&out).contains(&custom.display().to_string()), "{}", stderr(&out));
+        assert!(!custom.exists() && !room.join("AGENTS.md").exists());
+    }
+    fs::write(&custom, "# 設定で指定したルール\n").unwrap();
+    let out = env.run(&["rules", "sync"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = fs::read_to_string(room.join("AGENTS.md")).unwrap();
+    assert!(text.starts_with("<!-- workroom:rules sha256="));
+    assert!(text.ends_with("# 設定で指定したルール\n"));
+    assert!(!text.contains("既定の場所"));
+    assert_eq!(fs::read_to_string(default).unwrap(), "# 既定の場所のルール\n");
+}
+
+#[test]
+fn rules_sync_reports_failed_room_and_continues() {
+    let env = Env::new();
+    let template = env.root.join("_workroom").join("AGENTS.md");
+    fs::create_dir_all(template.parent().unwrap()).unwrap();
+    fs::write(template, "# ルール\n").unwrap();
+    // AGENTS.md がディレクトリなので、権限設定に依存せず読み取りに失敗する
+    let failed = env.root.join("2026-11-02-failed");
+    fs::create_dir_all(failed.join("AGENTS.md")).unwrap();
+    let next = env.root.join("2026-11-01-next");
+    fs::create_dir(&next).unwrap();
+    let (out, cwd) = env.run_cwd(&["rules", "sync"]);
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty() && cwd.is_empty());
+    assert!(stderr(&out).contains("失敗: 2026-11-02-failed:"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("更新 0件 / 作成 1件 / 変更なし 0件 / 手の変更のため対象外 0件"), "{}", stderr(&out));
+    assert!(failed.join("AGENTS.md").is_dir());
+    assert!(fs::read_to_string(next.join("AGENTS.md")).unwrap().starts_with("<!-- workroom:rules sha256="));
+}
+
+fn check_grep(use_builtin: bool) {
+    let env = Env::new();
+    env.write_config("exclude = [\"node_modules\", \"test-cache\"]\n");
+    let room = env.root.join("2026-11-02-search");
+    fs::create_dir_all(room.join("node_modules")).unwrap();
+    fs::create_dir(room.join("test-cache")).unwrap();
+    fs::create_dir(room.join("docs")).unwrap();
+    fs::write(room.join("docs").join("note.md"), "先頭の行\nneedle がある行\n").unwrap();
+    fs::write(room.join("node_modules").join("excluded.js"), "needle excluded_only\n").unwrap();
+    fs::write(room.join("test-cache").join("cached.md"), "needle excluded_only\n").unwrap();
+    fs::write(room.join("AGENTS.md"), "needle rules_only\n").unwrap();
+    let project_room = env.root.join("acme").join("2026-11-01-report");
+    fs::create_dir_all(&project_room).unwrap();
+    fs::write(project_room.join("report.md"), "needle 案件の行\n").unwrap();
+    let run = |pattern: &str| {
+        let mut cmd = env.cmd();
+        cmd.env_remove("RIPGREP_CONFIG_PATH");
+        if use_builtin {
+            cmd.env("PATH", "");
+        }
+        cmd.args(["grep", pattern, "--line-number"]).output().unwrap()
+    };
+    let out = run("needle");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stderr(&out).contains("rg が見つからない"), use_builtin, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(text.lines().any(|line| line.contains("note.md") && line.contains("needle がある行")), "{text}");
+    assert!(text.lines().any(|line| line.contains("report.md") && line.contains("needle 案件の行")), "{text}");
+    assert!(!text.contains("excluded.js") && !text.contains("cached.md") && !text.contains("AGENTS.md"), "{text}");
+    for pattern in ["excluded_only", "rules_only", "no_such_match"] {
+        let out = run(pattern);
+        assert_eq!(out.status.code(), Some(1), "{pattern}: {}", stderr(&out));
+        assert!(out.stdout.is_empty(), "{pattern}: {}", stdout(&out));
+    }
+}
+
+#[test]
+fn grep_with_builtin_search() {
+    check_grep(true);
+}
+
+#[test]
+fn grep_with_rg_when_available() {
+    match Command::new("rg").arg("--version").output() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("rg が PATH にないため、rg を使う統合テストは飛ばします");
+            return;
+        }
+        Err(e) => panic!("rg を起動できません: {e}"),
+        Ok(out) => assert!(out.status.success(), "{}", stderr(&out)),
+    }
+    check_grep(false);
+}
+
+/// import.rs と同じく、canonicalize で付く Windows の接頭辞を除く
+fn canonical_import_path(path: &Path) -> PathBuf {
+    let path = fs::canonicalize(path).unwrap();
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+        _ => path,
+    }
+}
+
+fn claude_history_dir(env: &Env, path: &Path) -> PathBuf {
+    let path = canonical_import_path(path);
+    let key: String = path.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    env.base.join("claude").join("projects").join(key)
+}
+
+fn import_source(env: &Env) -> PathBuf {
+    let source = env.base.join("移行 元");
+    fs::create_dir_all(source.join("docs").join("empty")).unwrap();
+    fs::write(source.join("note.txt"), "移行する内容\n").unwrap();
+    fs::write(source.join("docs").join("data.bin"), [0, 1, 0xff, 2]).unwrap();
+    source
+}
+
+#[test]
+fn import_moves_contents_and_copies_claude_history() {
+    let env = Env::new();
+    let source = import_source(&env);
+    let source_canonical = canonical_import_path(&source);
+    let old_history = claude_history_dir(&env, &source);
+    fs::create_dir_all(&old_history).unwrap();
+    let original_line = serde_json::json!({"cwd": source_canonical, "text": "テスト用の履歴"});
+    let history = format!("{original_line}\n");
+    fs::write(old_history.join("x.jsonl"), &history).unwrap();
+
+    let (out, cwd) =
+        env.run_cwd(&["import", source.to_str().unwrap(), "migrated", "取り込んだ作業", "--date", "2026-11-02"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let dest = env.root.join("2026-11-02-migrated");
+    assert_eq!(cwd, vec![dest.display().to_string()]);
+    assert!(!source.exists());
+    assert!(dest.join("docs").join("empty").is_dir());
+    assert_eq!(fs::read_to_string(dest.join("note.txt")).unwrap(), "移行する内容\n");
+    assert_eq!(fs::read(dest.join("docs").join("data.bin")).unwrap(), [0, 1, 0xff, 2]);
+    let readme = fs::read_to_string(dest.join("README.md")).unwrap();
+    assert!(readme.starts_with("# 取り込んだ作業\n"));
+    assert!(readme.contains("- imported:"));
+    let agents = fs::read_to_string(dest.join("AGENTS.md")).unwrap();
+    assert!(agents.lines().next().unwrap().starts_with("<!-- workroom:rules sha256="));
+    assert!(agents.contains("# 作業ディレクトリのルール"));
+
+    let new_history = claude_history_dir(&env, &dest);
+    assert_ne!(old_history, new_history);
+    let copied = fs::read_to_string(new_history.join("x.jsonl")).unwrap();
+    let copied_line: serde_json::Value = serde_json::from_str(copied.trim_end()).unwrap();
+    assert_eq!(copied_line, serde_json::json!({"cwd": canonical_import_path(&dest), "text": "テスト用の履歴"}));
+    assert_eq!(fs::read_to_string(old_history.join("x.jsonl")).unwrap(), history);
+}
+
+#[test]
+fn import_rejects_existing_destination_and_keeps_source() {
+    let env = Env::new();
+    let source = import_source(&env);
+    let dest = env.root.join("2026-11-02-migrated");
+    fs::create_dir_all(&dest).unwrap();
+    fs::write(dest.join("existing.md"), "既存の内容\n").unwrap();
+    let (out, cwd) = env.run_cwd(&["import", source.to_str().unwrap(), "migrated", "--date", "2026-11-02"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("移行先が既にあります"), "{}", stderr(&out));
+    assert!(cwd.is_empty());
+    assert_eq!(fs::read_to_string(source.join("note.txt")).unwrap(), "移行する内容\n");
+    assert_eq!(fs::read(source.join("docs").join("data.bin")).unwrap(), [0, 1, 0xff, 2]);
+    assert!(source.join("docs").join("empty").is_dir());
+    assert_eq!(fs::read_to_string(dest.join("existing.md")).unwrap(), "既存の内容\n");
+    assert_eq!(fs::read_dir(dest).unwrap().count(), 1);
+}
+
+#[test]
+fn import_rejects_cwd_inside_source_and_keeps_source() {
+    for subdir in ["", "docs"] {
+        let env = Env::new();
+        let source = import_source(&env);
+        let (out, cwd) = env.run_cwd_in(
+            &source.join(subdir),
+            &["import", source.to_str().unwrap(), "migrated", "--date", "2026-11-02"],
+        );
+        assert!(!out.status.success());
+        assert!(stderr(&out).contains("移行元の中にいるため"), "{}", stderr(&out));
+        assert!(cwd.is_empty());
+        assert_eq!(fs::read_to_string(source.join("note.txt")).unwrap(), "移行する内容\n");
+        assert_eq!(fs::read(source.join("docs").join("data.bin")).unwrap(), [0, 1, 0xff, 2]);
+        assert!(source.join("docs").join("empty").is_dir());
+        assert!(!env.root.exists());
+    }
 }

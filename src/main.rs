@@ -86,6 +86,11 @@ enum Cmd {
     Root,
     /// 既存のディレクトリを部屋として移行する（Claude Code の会話履歴も引き継ぐ）
     Import(ImportArgs),
+    /// 部屋のエージェント向けルールを管理する
+    Rules {
+        #[command(subcommand)]
+        command: RulesCmd,
+    },
     /// シェル連携のラッパー関数を出力する
     Init {
         /// シェルの種類
@@ -104,6 +109,16 @@ enum Cmd {
     /// 部屋の名前を一覧する（補完用）
     #[command(hide = true)]
     Names,
+}
+
+#[derive(Subcommand)]
+enum RulesCmd {
+    /// 全部屋の AGENTS.md をテンプレートに合わせて更新する
+    Sync {
+        /// ファイルを書かずに、更新・作成の予定を表示する
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Args)]
@@ -273,6 +288,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             enter(&settings, cwd_file, &dest, None)?;
         }
         Cmd::Config { init } => show_config(&settings, init)?,
+        Cmd::Rules { command: RulesCmd::Sync { dry_run } } => rules::sync(&settings, dry_run)?,
         Cmd::Names => {
             for r in room::scan(&settings.root, None)? {
                 println!("{}", r.label());

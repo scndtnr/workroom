@@ -11,7 +11,7 @@
 
 use crate::config::{self, Settings};
 use crate::room::{self, AGENTS};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -101,6 +101,10 @@ pub fn render(settings: &Settings, project: Option<&str>) -> Result<String> {
     let path = ensure_template(settings)?;
     let global = std::fs::read_to_string(&path)
         .with_context(|| format!("ルールのテンプレートを読めません: {}", path.display()))?;
+    render_with_global(settings, &global, project)
+}
+
+fn render_with_global(settings: &Settings, global: &str, project: Option<&str>) -> Result<String> {
     let project_text = match project {
         Some(p) => {
             let pp = project_template_path(settings, p);
@@ -112,12 +116,121 @@ pub fn render(settings: &Settings, project: Option<&str>) -> Result<String> {
         }
         None => None,
     };
-    Ok(with_header(&compose(&global, project_text.as_deref())))
+    Ok(with_header(&compose(global, project_text.as_deref())))
 }
 
 /// 部屋に AGENTS.md を書く
 pub fn write_room_rules(settings: &Settings, room_dir: &Path, project: Option<&str>) -> Result<()> {
     room::write_text(&room_dir.join(AGENTS), &render(settings, project)?)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SyncAction {
+    Create,
+    Update,
+    Unchanged,
+    Skip,
+}
+
+/// ファイルの読み書きとは独立した同期の判定
+fn sync_action(current: Option<&str>, desired: &str) -> SyncAction {
+    match current {
+        None => SyncAction::Create,
+        Some(text) if text == desired => SyncAction::Unchanged,
+        Some(text) if is_replaceable(text) => SyncAction::Update,
+        Some(_) => SyncAction::Skip,
+    }
+}
+
+#[derive(Default)]
+struct SyncReport {
+    updated: Vec<String>,
+    created: Vec<String>,
+    unchanged: usize,
+    skipped: Vec<String>,
+    failed: Vec<(String, String)>,
+}
+
+impl SyncReport {
+    fn print(&self, dry_run: bool) {
+        let update = if dry_run { "更新する予定" } else { "更新" };
+        let create = if dry_run { "作成する予定" } else { "作成" };
+        for (action, labels) in
+            [(update, &self.updated), (create, &self.created), ("手の変更のため対象外", &self.skipped)]
+        {
+            for label in labels {
+                eprintln!("{action}: {label}");
+            }
+        }
+        eprintln!(
+            "{update} {}件 / {create} {}件 / 変更なし {}件 / 手の変更のため対象外 {}件",
+            self.updated.len(),
+            self.created.len(),
+            self.unchanged,
+            self.skipped.len()
+        );
+        for (label, error) in &self.failed {
+            eprintln!("失敗: {label}: {error}");
+        }
+    }
+}
+
+/// 全部屋（完了済みを含む）のルールを同期する。テンプレートは自動作成しない
+pub fn sync(settings: &Settings, dry_run: bool) -> Result<()> {
+    let report = sync_with_writer(settings, dry_run, room::write_text)?;
+    report.print(dry_run);
+    if !report.failed.is_empty() {
+        bail!("ルールの同期に失敗した部屋が {}件あります", report.failed.len());
+    }
+    Ok(())
+}
+
+fn sync_with_writer(
+    settings: &Settings,
+    dry_run: bool,
+    mut write: impl FnMut(&Path, &str) -> Result<()>,
+) -> Result<SyncReport> {
+    // ensure_template は呼ばない。旧版のコピーを内蔵の文面で上書きしないため、先に読み取る
+    let template = template_path(settings);
+    let global = std::fs::read_to_string(&template).with_context(|| {
+        let mut message = format!("ルールのテンプレートを読めません: {}", template.display());
+        let legacy = settings.root.join(AGENTS);
+        if !template.exists() && legacy.is_file() {
+            let target = if settings.config.agent_rules.is_some() {
+                template.display().to_string()
+            } else {
+                format!("{TEMPLATE_DIR}/{AGENTS}")
+            };
+            message.push_str(&format!("。{} を {target} へ移してから実行してください", legacy.display()));
+        }
+        message
+    })?;
+    let mut report = SyncReport::default();
+    for r in room::scan(&settings.root, None)? {
+        let result = (|| -> Result<SyncAction> {
+            let desired = render_with_global(settings, &global, r.project.as_deref())?;
+            let path = r.path.join(AGENTS);
+            let current = match std::fs::read_to_string(&path) {
+                Ok(text) => Some(text),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e).with_context(|| format!("読めません: {}", path.display())),
+            };
+            let action = sync_action(current.as_deref(), &desired);
+            if !dry_run && matches!(action, SyncAction::Create | SyncAction::Update) {
+                write(&path, &desired)?;
+            }
+            Ok(action)
+        })();
+        let label = r.label();
+        match result {
+            Ok(SyncAction::Create) => report.created.push(label),
+            Ok(SyncAction::Update) => report.updated.push(label),
+            Ok(SyncAction::Unchanged) => report.unchanged += 1,
+            Ok(SyncAction::Skip) => report.skipped.push(label),
+            Err(e) => report.failed.push((label, format!("{e:#}"))),
+        }
+    }
+    Ok(report)
 }
 
 /// 作業ルート直下の AGENTS.md は、Claude Code が部屋のコピーと二重に読み込むので警告する
@@ -170,5 +283,55 @@ mod tests {
     fn builtin_template_has_no_header() {
         assert!(parse_header(BUILTIN).is_none());
         assert!(!BUILTIN.contains('\r'));
+    }
+
+    #[test]
+    fn sync_decisions() {
+        let desired = with_header(&compose("# 新しいルール\n", None));
+        let old = with_header(&compose("# 古いルール\n", None));
+        assert_eq!(sync_action(None, &desired), SyncAction::Create);
+        assert_eq!(sync_action(Some(&desired), &desired), SyncAction::Unchanged);
+        assert_eq!(sync_action(Some(&old), &desired), SyncAction::Update);
+        assert_eq!(sync_action(Some("\u{feff}<!-- wk: コピー -->\n# 古いルール\n"), &desired), SyncAction::Update);
+        assert_eq!(sync_action(Some(&format!("{old}- 手で追記\n")), &desired), SyncAction::Skip);
+        assert_eq!(sync_action(Some("# 手で作成\n"), &desired), SyncAction::Skip);
+        assert_eq!(sync_action(Some(""), &desired), SyncAction::Skip);
+    }
+
+    #[test]
+    fn sync_continues_after_write_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            config: crate::config::Config::default(),
+            config_path: dir.path().join("config.toml"),
+            root: dir.path().join("root"),
+            state_dir: dir.path().join("state"),
+            claude_dir: dir.path().join("claude"),
+        };
+        let template = template_path(&settings);
+        std::fs::create_dir_all(template.parent().unwrap()).unwrap();
+        std::fs::write(&template, "# ルール\n").unwrap();
+        let failed_room = settings.root.join("2026-11-02-failed");
+        let next_room = settings.root.join("2026-11-01-next");
+        std::fs::create_dir(&failed_room).unwrap();
+        std::fs::create_dir(&next_room).unwrap();
+        let old = with_header(&compose("# 古いルール", None));
+        std::fs::write(failed_room.join(AGENTS), &old).unwrap();
+
+        let mut attempted = Vec::new();
+        let report = sync_with_writer(&settings, false, |path, text| {
+            attempted.push(path.to_path_buf());
+            if path == failed_room.join(AGENTS) {
+                bail!("テスト用の書き込み失敗");
+            }
+            room::write_text(path, text)
+        })
+        .unwrap();
+        assert_eq!(attempted, vec![failed_room.join(AGENTS), next_room.join(AGENTS)]);
+        assert!(report.updated.is_empty());
+        assert_eq!(report.created, vec!["2026-11-01-next"]);
+        assert_eq!(report.failed, vec![("2026-11-02-failed".into(), "テスト用の書き込み失敗".into())]);
+        assert_eq!(std::fs::read_to_string(failed_room.join(AGENTS)).unwrap(), old);
+        assert!(is_unmodified(&std::fs::read_to_string(next_room.join(AGENTS)).unwrap()));
     }
 }
