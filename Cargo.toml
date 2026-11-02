@@ -1,0 +1,27 @@
+[package]
+name = "workroom"
+version = "0.1.0"
+edition = "2024"
+description = "AI エージェント（Claude Code / Codex など）に日付付きの作業部屋を用意する CLI"
+license = "MIT"
+repository = "https://github.com/scndtnr/workroom"
+readme = "README.md"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+nucleo-matcher = "0.3"
+ratatui = "0.29"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = "symbols"
+lto = true
