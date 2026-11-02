@@ -145,13 +145,16 @@ struct NewArgs {
 
 #[derive(Args)]
 struct LsArgs {
-    /// 名前・説明で絞り込む（指定すると日数と完了の絞り込みは外れる）
+    /// 名前・説明で絞り込む（指定すると日数と完了の絞り込みは外れ、-a / -o より優先する）
     #[arg(value_name = "検索語")]
     query: Option<String>,
     /// 全件を表示する
-    #[arg(short, long)]
+    #[arg(short, long, conflicts_with = "old")]
     all: bool,
-    /// 表示する日数（既定は設定の recent_days）
+    /// 直近 N 日より前の、未完了の部屋だけを表示する（古い部屋を探す）
+    #[arg(short, long)]
+    old: bool,
+    /// 表示する日数（-o では、これより前を表示する。既定は設定の recent_days）
     #[arg(long, value_name = "N")]
     days: Option<i64>,
     /// 部屋の中を表示する深さ
@@ -267,7 +270,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
             enter(&settings, cwd_file, &path, then)?;
         }
         Cmd::Ls(a) => {
-            ls::run(&settings, &ls::LsArgs { query: a.query.as_deref(), all: a.all, days: a.days, depth: a.depth })?;
+            ls::run(
+                &settings,
+                &ls::LsArgs { query: a.query.as_deref(), all: a.all, old: a.old, days: a.days, depth: a.depth },
+            )?;
         }
         Cmd::Grep { pattern, rg_args } => {
             let code = grep::run(&settings, &pattern, &rg_args)?;

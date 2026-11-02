@@ -83,7 +83,7 @@
 ## M5 公開準備
 進め方：Codex が 3〜5 と README・LICENSE の下書き、Claude Code が README の推敲・レビュー・公開前の確認・コミット（`claude-codex-handoff`）。
 - [ ] README.md（日本語）：概要、インストール（`cargo install --git` / Releases）、シェルごとの設定（PowerShell / bash・zsh / nushell）、コマンドと TUI のキー操作、名前の規則（日本語可・`/` は案件の区切り・Claude の履歴の名前の衝突の検出）、設定と環境変数、`_workroom/AGENTS.md` と `rules sync`、注意事項（Windows で Codex を使うなら作業ルートは NTFS 上、import は Claude Code の非公式な内部形式に依存）
-- [ ] LICENSE（MIT。著作権者の表記はユーザーと決める）
+- [ ] LICENSE（MIT。著作権者は `scndtnr`。2026-11-03 にユーザーと決定）
 - [ ] Cargo.toml：`rust-version = "1.88"`（ratatui 0.30 と let チェーンのため）、keywords などのメタデータ
 - [ ] GitHub Actions（CI）：push / PR で Windows と Linux の `cargo fmt --check`・`cargo clippy --all-targets -- -D warnings`・`cargo test`。Linux で落ちるテストがあれば直す（WSL に Rust があれば手元で確認）。`GITHUB_TOKEN` の権限は最小（`contents: read`）
 - [ ] Releases：`v*` のタグの push で、Windows x64（msvc）と Linux x64（musl、静的リンク）をビルドして GitHub Releases に置く。最初は `v0.1.0`

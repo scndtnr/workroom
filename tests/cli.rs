@@ -181,6 +181,28 @@ fn ls_hides_done_rooms_unless_all() {
 }
 
 #[test]
+fn ls_old_shows_only_old_unfinished_rooms() {
+    let env = Env::new();
+    env.run(&["new", "recent"]);
+    env.run(&["new", "old-open", "古い未完了", "--date", "2000-01-01"]);
+    env.run(&["new", "old-done", "--date", "2000-01-02"]);
+    env.run(&["done", "old-done"]);
+
+    let out = env.run(&["ls", "-o"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = stdout(&out);
+    assert!(out.contains("直近14日より前・未完了 1件"), "{out}");
+    assert!(out.contains("2000-01-01-old-open/  古い未完了"), "{out}");
+    assert!(!out.contains("recent") && !out.contains("old-done"), "{out}");
+
+    // 境目は --days で変えられる（0 日なら今日より前）
+    let out = stdout(&env.run(&["ls", "--old", "--days", "0"]));
+    assert!(out.contains("old-open") && !out.contains("recent"), "{out}");
+
+    assert!(!env.run(&["ls", "-a", "-o"]).status.success());
+}
+
+#[test]
 fn picker_requires_terminal() {
     let env = Env::new();
     env.run(&["new", "alpha", "--date", "2026-11-01"]);

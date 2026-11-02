@@ -10,6 +10,8 @@ use std::io::{IsTerminal, Write};
 pub struct LsArgs<'a> {
     pub query: Option<&'a str>,
     pub all: bool,
+    /// 直近 N 日より前の、未完了の部屋だけを表示する
+    pub old: bool,
     pub days: Option<i64>,
     pub depth: usize,
 }
@@ -39,14 +41,18 @@ impl Style {
 pub fn run(settings: &Settings, args: &LsArgs) -> Result<()> {
     let style = Style { on: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() };
     let days = args.days.unwrap_or(settings.config.recent_days);
-    let filtered = args.all || args.query.is_some();
-    let since = (!filtered).then(|| room::today(settings) - TimeDelta::days(days));
+    let cutoff = room::today(settings) - TimeDelta::days(days);
+    let filtered = args.all || args.old || args.query.is_some();
+    let since = (!filtered).then_some(cutoff);
     let mut rooms = room::scan(&settings.root, since)?;
     let label = if let Some(q) = args.query {
         let q_lower = q.to_lowercase();
         rooms
             .retain(|r| r.label().to_lowercase().contains(&q_lower) || r.description.to_lowercase().contains(&q_lower));
         format!("「{q}」に一致")
+    } else if args.old {
+        rooms.retain(|r| !r.done && r.date < cutoff);
+        format!("直近{days}日より前・未完了")
     } else if args.all {
         "全件".to_string()
     } else {
