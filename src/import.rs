@@ -43,22 +43,19 @@ pub fn run(settings: &Settings, args: &ImportArgs) -> Result<PathBuf> {
             DateTime::<Local>::from(created).date_naive()
         }
     };
-    let slug = match args.slug {
-        Some(s) => s.to_string(),
-        None => room::derive_slug(&rest),
-    };
-    if !room::is_valid_slug(&slug) {
-        bail!("slug を英小文字・数字・ハイフンで指定してください: workroom import \"{}\" <slug> [説明]", src.display());
-    }
-
-    room::ensure_root(settings)?;
-    let parent = match args.project {
-        Some(p) => room::ensure_project(settings, p)?,
-        None => settings.root.clone(),
-    };
-    let dest = parent.join(format!("{}-{slug}", date.format("%Y-%m-%d")));
+    let target = room::parse_new_name(args.slug.unwrap_or(&rest), args.project, settings.config.project_uppercase)
+        .with_context(|| {
+            format!("部屋の名前を指定してください: workroom import \"{}\" <名前> [説明]", src.display())
+        })?;
+    let slug = &target.slug;
+    let dest = target.path(&settings.root, date);
     if dest.exists() {
         bail!("移行先が既にあります: {}", dest.display());
+    }
+    room::check_claude_collision(settings, &dest)?;
+    room::ensure_root(settings)?;
+    if let Some(p) = &target.project {
+        room::ensure_project(settings, p)?;
     }
 
     eprintln!("移行: {}", src.display());
@@ -83,9 +80,10 @@ pub fn run(settings: &Settings, args: &ImportArgs) -> Result<PathBuf> {
     if dest.join(AGENTS).exists() {
         eprintln!("警告: AGENTS.md が既にあるため、ルールのテンプレートはコピーしていません");
     } else {
-        crate::rules::write_room_rules(settings, &dest, args.project)?;
+        crate::rules::write_room_rules(settings, &dest, target.project.as_deref())?;
     }
 
+    room::warn_existing_claude_history(settings, &dest)?;
     copy_claude_project(settings, &src, &dest)?;
     std::fs::remove_dir_all(&src).with_context(|| format!("移行元を削除できません: {}", src.display()))?;
     eprintln!("完了しました: {}", dest.display());
@@ -127,14 +125,9 @@ fn count_entries(dir: &Path) -> usize {
         .unwrap_or(0)
 }
 
-/// Claude Code が `projects/` 配下で使うディレクトリ名（英数字以外を `-` に置換）
-pub fn claude_project_key(path: &Path) -> String {
-    path.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
-}
-
 fn copy_claude_project(settings: &Settings, from: &Path, to: &Path) -> Result<()> {
     let projects = settings.claude_dir.join("projects");
-    let (old_key, new_key) = (claude_project_key(from), claude_project_key(to));
+    let (old_key, new_key) = (room::claude_history_key(from)?, room::claude_history_key(to)?);
     let old_dir = projects.join(&old_key);
     let new_dir = projects.join(&new_key);
     if !old_dir.is_dir() {
@@ -150,7 +143,8 @@ fn copy_claude_project(settings: &Settings, from: &Path, to: &Path) -> Result<()
         return Ok(());
     }
     copy_dir(&old_dir, &new_dir)?;
-    let count = rewrite_cwd(&new_dir, from, to)?;
+    let to = std::path::absolute(to)?;
+    let count = rewrite_cwd(&new_dir, from, &to)?;
     eprintln!("  Claude の履歴をコピーしました（cwd 書き換え: {count} ファイル）: {new_key}");
     eprintln!("  元の履歴は残しています: {}", old_dir.display());
     Ok(())
@@ -220,7 +214,7 @@ mod tests {
 
     #[test]
     fn project_key() {
-        assert_eq!(claude_project_key(Path::new(r"D:\作業場\work")), "D------work");
+        assert_eq!(room::claude_project_key(Path::new(r"D:\作業場\work")), "D------work");
     }
 
     #[test]

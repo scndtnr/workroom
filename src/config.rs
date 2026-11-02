@@ -24,6 +24,8 @@ pub struct Config {
     pub recent_days: i64,
     /// Nerd Font のアイコンを使うか
     pub icons: bool,
+    /// 案件名の ASCII 英小文字を大文字にそろえるか（既存のディレクトリ名は変えない）
+    pub project_uppercase: bool,
     /// tree 表示・検索・サイズ計算から除外する名前
     pub exclude: Vec<String>,
     /// 部屋の AGENTS.md にコピーするルールのテンプレート（既定は `<root>/_workroom/AGENTS.md`）
@@ -37,6 +39,7 @@ impl Default for Config {
             day_start_hour: 0,
             recent_days: 14,
             icons: false,
+            project_uppercase: false,
             exclude: vec!["node_modules".into(), ".venv".into(), "__pycache__".into(), ".git".into()],
             agent_rules: None,
         }
@@ -126,6 +129,9 @@ recent_days = 14
 
 # Nerd Font のアイコンを使う
 icons = false
+
+# 案件名の ASCII 英小文字を大文字にそろえる（既存の案件名は変えない）
+project_uppercase = false
 
 # tree 表示・検索・サイズ計算から除外する名前
 exclude = ["node_modules", ".venv", "__pycache__", ".git"]

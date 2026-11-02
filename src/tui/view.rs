@@ -44,7 +44,11 @@ pub fn render(frame: &mut Frame, state: &State, ctx: &ViewContext, list_state: &
 }
 
 fn render_list(frame: &mut Frame, state: &State, ctx: &ViewContext, area: Rect, list_state: &mut ListState) {
-    let block = Block::bordered().title(Line::from(vec![" wk ".bold(), format!(" {} ", ctx.root).dark_gray()]));
+    let mut title = vec![" wk ".bold(), format!(" {} ", ctx.root).dark_gray()];
+    if let Some(project) = state.project() {
+        title.push(format!(" 案件: {project} ").blue());
+    }
+    let block = Block::bordered().title(Line::from(title));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let [input_area, list_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
@@ -67,9 +71,12 @@ fn render_list(frame: &mut Frame, state: &State, ctx: &ViewContext, area: Rect, 
     let items: Vec<ListItem> = state.rows().map(|row| ListItem::new(row_line(row, ctx.icons))).collect();
     if items.is_empty() {
         let msg = if state.total() == 0 {
-            "部屋がありません。検索語を入力して Enter で作成します"
+            match state.project() {
+                Some(project) => format!("案件 {project} に部屋がありません。検索語を入力して Enter で作成します"),
+                None => "部屋がありません。検索語を入力して Enter で作成します".to_string(),
+            }
         } else {
-            "一致する部屋がありません"
+            "一致する部屋がありません".to_string()
         };
         frame.render_widget(Paragraph::new(Line::from(msg).dark_gray()), list_area);
         return;
@@ -103,8 +110,8 @@ fn row_line(row: Row, icons: bool) -> Line<'static> {
             }
             Line::from(spans)
         }
-        Row::Create(Some(slug)) => Line::from(vec!["+ 新規作成: ".green(), Span::raw(slug.to_string()).green().bold()]),
-        Row::Create(None) => Line::from("+ 新規作成（この検索語は slug にできません）").dark_gray(),
+        Row::Create(Ok(target)) => Line::from(vec!["+ 新規作成: ".green(), Span::raw(target.label()).green().bold()]),
+        Row::Create(Err(reason)) => Line::from(format!("+ 新規作成できません: {reason}")).dark_gray(),
     }
 }
 
@@ -196,6 +203,8 @@ mod tests {
                 item("2026-10-01-old", None, "", true, None),
             ],
             "",
+            None,
+            false,
         )
     }
 
@@ -242,24 +251,51 @@ mod tests {
 
     #[test]
     fn snapshot_empty_root_and_status() {
-        let mut state = State::new(Vec::new(), "");
+        let mut state = State::new(Vec::new(), "", None, false);
         let ctx = ViewContext { root: "~/work", icons: false, preview: None };
         let lines = draw(&state, &ctx, 80, 6);
         assert!(lines[2].contains("部屋がありません"), "{lines:#?}");
 
-        for c in "日本".chars() {
+        for c in "a:b".chars() {
             state.apply(Action::Input(c));
         }
+        state.apply(Action::TogglePreview);
         state.apply(Action::Enter);
-        let lines = draw(&state, &ctx, 80, 6);
-        assert!(lines[1].starts_with("│> 日本"), "{lines:#?}");
-        assert!(lines[2].contains("+ 新規作成（この検索語は slug にできません）"), "{lines:#?}");
-        assert!(lines[5].contains("slug にできません（英小文字"), "{lines:#?}");
+        let lines = draw(&state, &ctx, 100, 6);
+        assert!(lines[1].starts_with("│> a:b"), "{lines:#?}");
+        assert!(lines[2].contains("+ 新規作成できません: 部屋の名前に `:` は使えません"), "{lines:#?}");
+        assert!(lines[5].contains("部屋の名前に `:` は使えません"), "{lines:#?}");
+    }
+
+    #[test]
+    fn snapshot_project_title_empty_message_and_create_rows() {
+        let ctx = ViewContext { root: "~/work", icons: false, preview: None };
+        let mut state = State::new(Vec::new(), "", Some("ACME"), true);
+        state.apply(Action::TogglePreview);
+        let lines = draw(&state, &ctx, 100, 6);
+        assert!(lines[0].starts_with("┌ wk  ~/work  案件: ACME ─"), "{lines:#?}");
+        assert!(lines[2].contains("案件 ACME に部屋がありません。検索語を入力して Enter で作成します"), "{lines:#?}");
+        for c in "調査".chars() {
+            state.apply(Action::Input(c));
+        }
+        let lines = draw(&state, &ctx, 100, 6);
+        assert!(lines[2].contains("+ 新規作成: ACME/調査"), "{lines:#?}");
+        state.apply(Action::Clear);
+        for c in "other/x".chars() {
+            state.apply(Action::Input(c));
+        }
+        let lines = draw(&state, &ctx, 100, 6);
+        assert!(lines[2].contains("+ 新規作成: OTHER/x"), "{lines:#?}");
+
+        let state = State::new(Vec::new(), "調査", None, false);
+        let lines = draw(&state, &ctx, 60, 6);
+        assert!(lines[2].contains("+ 新規作成: 調査"), "{lines:#?}");
+        assert!(!lines[0].contains("案件:"), "{lines:#?}");
     }
 
     #[test]
     fn cursor_follows_wide_characters() {
-        let mut state = State::new(Vec::new(), "");
+        let mut state = State::new(Vec::new(), "", None, false);
         for c in "日本a".chars() {
             state.apply(Action::Input(c));
         }

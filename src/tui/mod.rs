@@ -27,7 +27,7 @@ use std::time::Duration;
 pub enum Outcome {
     Quit,
     Enter(PathBuf),
-    Create(String),
+    Create { project: Option<String>, slug: String },
 }
 
 /// TUI を表示できる端末か（標準入力と標準出力の両方が端末）
@@ -84,8 +84,8 @@ fn load_items(settings: &Settings) -> Result<Vec<Item>> {
 }
 
 /// ピッカーを表示する。呼び出す前に `has_terminal()` を確かめること
-pub fn run(settings: &Settings, query: &str) -> Result<Outcome> {
-    let mut state = State::new(load_items(settings)?, query);
+pub fn run(settings: &Settings, query: &str, project: Option<&str>) -> Result<Outcome> {
+    let mut state = State::new(load_items(settings)?, query, project, settings.config.project_uppercase);
     // ratatui::try_init はパニック時にも端末を元に戻すフックを入れる
     let mut terminal = ratatui::try_init()?;
     preview::install_panic_hook();
@@ -122,7 +122,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, state: &mut State, settin
             Effect::None => {}
             Effect::Quit => return Ok(Outcome::Quit),
             Effect::Enter(path) => return Ok(Outcome::Enter(path)),
-            Effect::Create(slug) => return Ok(Outcome::Create(slug)),
+            Effect::Create { project, slug } => return Ok(Outcome::Create { project, slug }),
             Effect::SetDone(path, done) => match room::set_done_at(&path, done) {
                 Ok(()) => state.mark_done(&path, done),
                 Err(e) => state.set_status(format!("完了の切り替えに失敗しました: {e:#}")),

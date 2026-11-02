@@ -23,7 +23,11 @@ impl Env {
     }
 
     fn cmd(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_workroom"));
+        self.command(env!("CARGO_BIN_EXE_workroom"))
+    }
+
+    fn command(&self, program: &str) -> Command {
+        let mut c = Command::new(program);
         c.env("WORKROOM_CONFIG", self.base.join("config").join("config.toml"))
             .env("WORKROOM_ROOT", &self.root)
             .env("WORKROOM_STATE_DIR", self.base.join("state"))
@@ -114,12 +118,21 @@ fn new_in_project_appends_project_rules() {
 #[test]
 fn new_rejects_invalid_input_without_writing_cwd_file() {
     let env = Env::new();
-    for args in
-        [&["new", "日本語"][..], &["new", "Bad_Slug"], &["new", "ok", "-p", "Bad"], &["new", "ok", "--date", "11/02"]]
-    {
+    for args in [
+        &["new", "a:b"][..],
+        &["new", r"a\b"],
+        &["new", "末尾."],
+        &["new", "ok", "-p", "_Bad"],
+        &["new", "ok", "--date", "11/02"],
+        &["new", "a/b/c"],
+        &["new", "/x"],
+        &["new", "a/"],
+        &["new", "a/b", "-p", "a"],
+    ] {
         let (out, lines) = env.run_cwd(args);
         assert!(!out.status.success(), "{args:?}");
         assert!(lines.is_empty(), "{args:?}");
+        assert!(!env.root.exists(), "{args:?}");
     }
     let out = env.run(&["new", "a", "-c", "-x"]);
     assert_eq!(out.status.code(), Some(2));
@@ -181,6 +194,132 @@ fn picker_requires_terminal() {
 }
 
 #[test]
+fn new_without_name_requires_project_or_terminal_and_does_not_create_files() {
+    let env = Env::new();
+    for args in [
+        &["new"][..],
+        &["new", "-p", "acme"],
+        &["new", "-p", "acme", "--date", "2026-11-03", "-c"],
+        &["new", "-p", "acme", "-x"],
+    ] {
+        let (out, lines) = env.run_cwd(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        let expected = if args.len() == 1 {
+            "部屋の名前か、`-p <案件>` を指定してください"
+        } else {
+            "ピッカーは端末でのみ使えます"
+        };
+        assert!(stderr(&out).contains(expected), "{}", stderr(&out));
+        assert!(lines.is_empty());
+        assert!(!env.root.exists());
+        assert!(!env.base.join("state").exists());
+        assert!(!env.base.join("claude").exists());
+    }
+}
+
+#[test]
+fn new_accepts_japanese_underscores_case_and_normalized_spaces() {
+    let env = Env::new();
+    for (input, name) in [("調査", "調査"), ("Bad_Slug", "Bad_Slug"), ("　Fix  Bug　 ", "Fix-Bug")] {
+        let (out, lines) = env.run_cwd(&["new", input, "--date", "2026-11-03"]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        let room = env.root.join(format!("2026-11-03-{name}"));
+        assert_eq!(lines, [room.display().to_string()]);
+        assert!(fs::read_to_string(room.join("README.md")).unwrap().starts_with(&format!("# {name}\n")));
+    }
+    let (out, _) = env.run_cwd(&["new", "x", "-p", "Bad", "--date", "2026-11-03"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(env.root.join("Bad").join("2026-11-03-x").is_dir());
+}
+
+#[test]
+fn new_project_slash_and_uppercase_configuration() {
+    let env = Env::new();
+    let (out, lines) = env.run_cwd(&["new", "ACME/調査", "--date", "2026-11-03"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(lines, [env.root.join("ACME").join("2026-11-03-調査").display().to_string()]);
+    env.write_config("project_uppercase = true\n");
+    for (args, project, name) in [
+        (vec!["new", "x", "-p", "acme"], "ACME", "x"),
+        (vec!["new", "acme営業/Fix_Bug"], "ACME営業", "Fix_Bug"),
+        (vec!["new", "y", "-p", " acme　営業 "], "ACME-営業", "y"),
+    ] {
+        let mut args = args;
+        args.extend(["--date", "2026-11-03"]);
+        let (out, lines) = env.run_cwd(&args);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(lines, [env.root.join(project).join(format!("2026-11-03-{name}")).display().to_string()]);
+    }
+}
+
+#[test]
+fn invalid_project_never_creates_root_or_template() {
+    let env = Env::new();
+    for project in ["_x", ".x", "2026-11-03-x", "CON", "nul.txt", "a:b", "a/b", r"a\b"] {
+        for args in [vec!["new", "x", "-p", project], vec!["new", "-p", project]] {
+            let (out, lines) = env.run_cwd(&args);
+            assert!(!out.status.success(), "{project}");
+            assert!(stderr(&out).contains("案件名"), "{}", stderr(&out));
+            assert!(lines.is_empty());
+            assert!(!env.root.exists());
+            assert!(!env.base.join("state").exists());
+        }
+    }
+}
+
+#[test]
+fn new_rejects_claude_history_collisions_and_can_reenter_existing_room() {
+    let env = Env::new();
+    let (out, _) = env.run_cwd(&["new", "調査", "--date", "2026-11-03"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let (out, lines) = env.run_cwd(&["new", "分析", "--date", "2026-11-03"]);
+    assert!(!out.status.success());
+    let error = stderr(&out);
+    assert!(
+        error.contains("2026-11-03-分析")
+            && error.contains("2026-11-03-調査")
+            && error.contains("名前に英数字を加えてください"),
+        "{error}"
+    );
+    assert!(lines.is_empty());
+    assert!(!env.root.join("2026-11-03-分析").exists());
+    let (out, _) = env.run_cwd(&["new", "分析中", "--date", "2026-11-03"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    fs::create_dir(env.root.join("2026-11-03-報告")).unwrap();
+    let (out, lines) = env.run_cwd(&["new", "調査", "--date", "2026-11-03"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("既にあるため移動"));
+    assert_eq!(lines, [env.root.join("2026-11-03-調査").display().to_string()]);
+}
+
+#[test]
+fn new_warns_about_orphaned_claude_history_after_creating_room() {
+    let env = Env::new();
+    let dest = env.root.join("2026-11-03-調査");
+    let history = claude_history_dir(&env, &dest);
+    fs::create_dir_all(&history).unwrap();
+    fs::write(history.join("keep.jsonl"), "履歴の代わり\n").unwrap();
+    let (out, lines) = env.run_cwd(&["new", "調査", "--date", "2026-11-03"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(dest.join("README.md").is_file());
+    assert_eq!(lines, [dest.display().to_string()]);
+    assert!(stderr(&out).contains("削除した部屋の履歴が残っている可能性"), "{}", stderr(&out));
+    assert_eq!(fs::read_to_string(history.join("keep.jsonl")).unwrap(), "履歴の代わり\n");
+}
+
+#[test]
+fn new_with_relative_root_warns_about_history_using_absolute_path() {
+    let env = Env::new();
+    let dest = env.base.join("rooms").join("2026-11-03-調査");
+    let history = claude_history_dir(&env, &dest);
+    fs::create_dir_all(&history).unwrap();
+    let out = env.cmd().env("WORKROOM_ROOT", "rooms").args(["new", "調査", "--date", "2026-11-03"]).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(dest.join("README.md").is_file());
+    assert!(stderr(&out).contains("削除した部屋の履歴が残っている可能性"), "{}", stderr(&out));
+}
+
+#[test]
 fn drive_sync_temp_dirs_are_not_projects() {
     let env = Env::new();
     env.run(&["new", "real", "--date", "2026-11-02"]);
@@ -225,6 +364,7 @@ fn config_shows_paths_and_init_writes_sample() {
     assert!(out.status.success(), "{}", stderr(&out));
     let path = env.base.join("config").join("config.toml");
     assert!(fs::read_to_string(&path).unwrap().contains("day_start_hour = 0"));
+    assert!(fs::read_to_string(&path).unwrap().contains("project_uppercase = false"));
     assert!(!env.run(&["config", "--init"]).status.success());
 
     // 雛形はそのまま読み込める
@@ -523,7 +663,7 @@ fn canonical_import_path(path: &Path) -> PathBuf {
 }
 
 fn claude_history_dir(env: &Env, path: &Path) -> PathBuf {
-    let path = canonical_import_path(path);
+    let path = if path.exists() { canonical_import_path(path) } else { path.to_path_buf() };
     let key: String = path.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     env.base.join("claude").join("projects").join(key)
 }
@@ -572,6 +712,31 @@ fn import_moves_contents_and_copies_claude_history() {
 }
 
 #[test]
+fn import_with_relative_root_uses_absolute_history_key_and_cwd() {
+    let env = Env::new();
+    let source = import_source(&env);
+    let old_history = claude_history_dir(&env, &source);
+    fs::create_dir_all(&old_history).unwrap();
+    let line = serde_json::json!({ "cwd": canonical_import_path(&source) });
+    fs::write(old_history.join("x.jsonl"), format!("{line}\n")).unwrap();
+    let out = env
+        .cmd()
+        .env("WORKROOM_ROOT", "rooms")
+        .args(["import", source.to_str().unwrap(), "migrated", "--date", "2026-11-03"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let dest = env.base.join("rooms").join("2026-11-03-migrated");
+    let copied = fs::read_to_string(claude_history_dir(&env, &dest).join("x.jsonl")).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&copied).unwrap(),
+        serde_json::json!({ "cwd": canonical_import_path(&dest) })
+    );
+    assert!(!source.exists());
+    assert!(old_history.join("x.jsonl").is_file());
+}
+
+#[test]
 fn import_rejects_existing_destination_and_keeps_source() {
     let env = Env::new();
     let source = import_source(&env);
@@ -606,4 +771,114 @@ fn import_rejects_cwd_inside_source_and_keeps_source() {
         assert!(source.join("docs").join("empty").is_dir());
         assert!(!env.root.exists());
     }
+}
+
+#[test]
+fn import_default_name_keeps_underscores_case_and_normalizes_spaces() {
+    let env = Env::new();
+    for (source_name, expected) in
+        [("2026-11-01-novel_review", "novel_review"), ("　My  Task　", "My-Task"), ("日本語の作業", "日本語の作業")]
+    {
+        let source = env.base.join(source_name);
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("keep.txt"), "移行する内容").unwrap();
+        let (out, lines) = env.run_cwd(&["import", source.to_str().unwrap(), "--date", "2026-11-03"]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        let dest = env.root.join(format!("2026-11-03-{expected}"));
+        assert_eq!(lines, [dest.display().to_string()]);
+        assert_eq!(fs::read_to_string(dest.join("keep.txt")).unwrap(), "移行する内容");
+        assert!(!source.exists());
+    }
+}
+
+#[test]
+fn import_invalid_default_name_or_project_keeps_source_and_does_not_create_root() {
+    let env = Env::new();
+    let source = env.base.join(".invalid");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("keep.txt"), "残す内容").unwrap();
+    for args in [vec!["import", source.to_str().unwrap()], vec!["import", source.to_str().unwrap(), "ok", "-p", "_bad"]]
+    {
+        let (out, lines) = env.run_cwd(&args);
+        assert!(!out.status.success());
+        assert!(stderr(&out).contains("部屋の名前を指定してください"), "{}", stderr(&out));
+        assert!(lines.is_empty());
+        assert_eq!(fs::read_to_string(source.join("keep.txt")).unwrap(), "残す内容");
+        assert!(!env.root.exists());
+    }
+}
+
+#[test]
+fn import_rejects_history_collision_before_copying_and_keeps_source() {
+    let env = Env::new();
+    let source = import_source(&env);
+    let existing = env.root.join("2026-11-03-調査");
+    fs::create_dir_all(&existing).unwrap();
+    let old_history = claude_history_dir(&env, &source);
+    fs::create_dir_all(&old_history).unwrap();
+    fs::write(old_history.join("keep.jsonl"), "残す履歴").unwrap();
+    let (out, lines) = env.run_cwd(&["import", source.to_str().unwrap(), "分析", "--date", "2026-11-03"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("Claude Code の履歴の名前"), "{}", stderr(&out));
+    assert!(lines.is_empty());
+    assert!(!env.root.join("2026-11-03-分析").exists());
+    assert!(!env.root.join("_workroom").exists());
+    assert_eq!(fs::read_to_string(source.join("note.txt")).unwrap(), "移行する内容\n");
+    assert_eq!(fs::read_to_string(old_history.join("keep.jsonl")).unwrap(), "残す履歴");
+}
+
+#[test]
+fn import_normalizes_explicit_names_and_project_uppercase() {
+    let env = Env::new();
+    env.write_config("project_uppercase = true\n");
+    let source = import_source(&env);
+    let (out, lines) =
+        env.run_cwd(&["import", source.to_str().unwrap(), " Fix Bug ", "-p", "acme営業", "--date", "2026-11-03"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let dest = env.root.join("ACME営業").join("2026-11-03-Fix-Bug");
+    assert_eq!(lines, [dest.display().to_string()]);
+    assert!(dest.join("note.txt").is_file());
+}
+
+#[test]
+fn pwsh_completion_reads_japanese_names_as_utf8_and_restores_console_encoding() {
+    match Command::new("pwsh").args(["-NoProfile", "-NonInteractive", "-Command", "exit 0"]).output() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("pwsh が PATH にないため、PowerShell の補完テストは飛ばします");
+            return;
+        }
+        Err(e) => panic!("pwsh を起動できません: {e}"),
+        Ok(out) => assert!(out.status.success(), "{}", stderr(&out)),
+    }
+    let env = Env::new();
+    let out = env.run(&["new", "調査", "--date", "2026-11-03"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let script = env.base.join("completion.ps1");
+    fs::write(
+        &script,
+        r#"param([string]$Executable)
+$ErrorActionPreference = 'Stop'
+$env:PATH = (Split-Path -LiteralPath $Executable) + [IO.Path]::PathSeparator + $env:PATH
+$original = [Console]::OutputEncoding
+try {
+    [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(932)
+    & $Executable init pwsh --cmd wr | Out-String | Invoke-Expression
+    $line = 'wr done 調'
+    $completions = (TabExpansion2 $line $line.Length).CompletionMatches.CompletionText
+    if ('2026-11-03-調査' -notin $completions) { throw '日本語の補完候補がありません' }
+    if ([Console]::OutputEncoding.CodePage -ne 932) { throw 'コンソールの文字コードが戻っていません' }
+} finally {
+    [Console]::OutputEncoding = $original
+}
+"#,
+    )
+    .unwrap();
+    let out = env
+        .command("pwsh")
+        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .arg(&script)
+        .arg(env!("CARGO_BIN_EXE_workroom"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
 }

@@ -73,7 +73,7 @@ pub enum Effect {
     None,
     Quit,
     Enter(PathBuf),
-    Create(String),
+    Create { project: Option<String>, slug: String },
     SetDone(PathBuf, bool),
     Open(PathBuf),
 }
@@ -82,35 +82,42 @@ pub enum Effect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row<'a> {
     Room(&'a Item),
-    /// 「+ 新規作成」の行。slug にできない検索語なら None
-    Create(Option<&'a str>),
+    /// 「+ 新規作成」の行。名前にできない検索語なら理由を返す
+    Create(Result<&'a room::RoomTarget, &'a str>),
 }
 
 pub struct State {
     items: Vec<Item>,
     query: String,
+    project: Option<String>,
+    project_uppercase: bool,
     sort: SortMode,
     show_done: bool,
     show_preview: bool,
     /// 表示する部屋（items の添字）
     visible: Vec<usize>,
     selected: usize,
-    create_slug: Option<String>,
+    create_target: Result<room::RoomTarget, String>,
     status: Option<String>,
     matcher: Matcher,
 }
 
 impl State {
-    pub fn new(items: Vec<Item>, query: &str) -> Self {
+    pub fn new(mut items: Vec<Item>, query: &str, project: Option<&str>, project_uppercase: bool) -> Self {
+        if let Some(project) = project {
+            items.retain(|i| i.room.project.as_ref().is_some_and(|p| p.eq_ignore_ascii_case(project)));
+        }
         let mut s = Self {
             items,
             query: query.to_string(),
+            project: project.map(str::to_string),
+            project_uppercase,
             sort: SortMode::Recent,
             show_done: false,
             show_preview: true,
             visible: Vec::new(),
             selected: 0,
-            create_slug: None,
+            create_target: Err(String::new()),
             status: None,
             matcher: Matcher::new(Config::DEFAULT),
         };
@@ -120,6 +127,9 @@ impl State {
 
     pub fn query(&self) -> &str {
         &self.query
+    }
+    pub fn project(&self) -> Option<&str> {
+        self.project.as_deref()
     }
     pub fn sort(&self) -> SortMode {
         self.sort
@@ -161,7 +171,7 @@ impl State {
 
     pub fn rows(&self) -> impl Iterator<Item = Row<'_>> {
         let rooms = self.visible.iter().map(|&i| Row::Room(&self.items[i]));
-        let create = self.has_create_row().then_some(Row::Create(self.create_slug.as_deref()));
+        let create = self.has_create_row().then_some(Row::Create(self.create_target.as_ref().map_err(String::as_str)));
         rooms.chain(create)
     }
 
@@ -176,13 +186,9 @@ impl State {
     /// 絞り込みと並び替えをやり直す。`keep` の部屋が残っていれば、それを選んだままにする
     fn refresh(&mut self, keep: Option<PathBuf>) {
         let q = self.query.trim();
-        self.create_slug = if q.is_empty() {
-            None
-        } else if room::is_valid_slug(q) {
-            Some(q.to_string())
-        } else {
-            Some(room::derive_slug(q)).filter(|s| room::is_valid_slug(s))
-        };
+        // 検索語に案件があれば、絞り込み中の案件より優先する。
+        let project = if q.contains('/') { None } else { self.project.as_deref() };
+        self.create_target = room::parse_new_name(q, project, self.project_uppercase).map_err(|e| e.to_string());
 
         let candidates = (0..self.items.len()).filter(|&i| self.show_done || !self.items[i].room.done);
         let mut scored: Vec<(usize, u32)> = if q.is_empty() {
@@ -231,9 +237,11 @@ impl State {
                     return Effect::Enter(item.room.path.clone());
                 }
                 if self.has_create_row() {
-                    match &self.create_slug {
-                        Some(slug) => return Effect::Create(slug.clone()),
-                        None => self.set_status("この検索語は slug にできません（英小文字・数字・ハイフンで入力）"),
+                    match &self.create_target {
+                        Ok(target) => {
+                            return Effect::Create { project: target.project.clone(), slug: target.slug.clone() };
+                        }
+                        Err(reason) => self.status = Some(reason.clone()),
                     }
                 }
             }
@@ -327,7 +335,7 @@ pub(crate) mod tests {
         s.rows()
             .map(|r| match r {
                 Row::Room(i) => i.room.label(),
-                Row::Create(slug) => format!("+{}", slug.unwrap_or("?")),
+                Row::Create(target) => format!("+{}", target.map(|t| t.label()).unwrap_or_else(|_| "?".into())),
             })
             .collect()
     }
@@ -340,7 +348,7 @@ pub(crate) mod tests {
 
     #[test]
     fn recent_order_falls_back_to_room_date() {
-        let s = State::new(sample(), "");
+        let s = State::new(sample(), "", None, false);
         // report(11/3 使用) > novel-review(11/2 00:01 使用) > fix-bug(作成 11/2 00:00)。完了済みは隠れる
         assert_eq!(names(&s), ["acme/2026-11-01-report", "2026-06-14-novel-review", "2026-11-02-fix-bug"]);
         assert_eq!(s.hidden_done(), 1);
@@ -348,7 +356,7 @@ pub(crate) mod tests {
 
     #[test]
     fn sort_cycles_and_keeps_selection() {
-        let mut s = State::new(sample(), "");
+        let mut s = State::new(sample(), "", None, false);
         s.apply(Action::Down); // novel-review
         s.apply(Action::CycleSort);
         assert_eq!(s.sort(), SortMode::Created);
@@ -363,12 +371,12 @@ pub(crate) mod tests {
 
     #[test]
     fn fuzzy_search_covers_slug_project_and_japanese_description() {
-        let mut s = State::new(sample(), "");
+        let mut s = State::new(sample(), "", None, false);
         type_str(&mut s, "acme");
         assert_eq!(names(&s), ["acme/2026-11-01-report", "+acme"]);
         s.apply(Action::Clear);
         type_str(&mut s, "講評");
-        assert_eq!(names(&s), ["2026-06-14-novel-review", "+?"]);
+        assert_eq!(names(&s), ["2026-06-14-novel-review", "+講評"]);
         s.apply(Action::Clear);
         type_str(&mut s, "fxbg");
         assert_eq!(names(&s)[0], "2026-11-02-fix-bug");
@@ -380,7 +388,7 @@ pub(crate) mod tests {
             item("2026-11-01-task-a", None, "", false, Some(ts(2026, 11, 5))),
             item("2026-11-02-task-b", None, "", false, Some(ts(2026, 11, 4))),
         ];
-        let mut s = State::new(items, "task");
+        let mut s = State::new(items, "task", None, false);
         assert_eq!(names(&s), ["2026-11-01-task-a", "2026-11-02-task-b", "+task"]);
         s.apply(Action::CycleSort);
         assert_eq!(names(&s), ["2026-11-02-task-b", "2026-11-01-task-a", "+task"]);
@@ -388,17 +396,20 @@ pub(crate) mod tests {
 
     #[test]
     fn create_row_derives_slug_or_refuses() {
-        let mut s = State::new(sample(), "new-thing");
+        let mut s = State::new(sample(), "new-thing", None, false);
         assert_eq!(names(&s), ["+new-thing"]);
-        assert_eq!(s.apply(Action::Enter), Effect::Create("new-thing".into()));
+        assert_eq!(s.apply(Action::Enter), Effect::Create { project: None, slug: "new-thing".into() });
 
-        let mut s = State::new(sample(), "New Thing");
+        let mut s = State::new(sample(), "New Thing", None, false);
         s.apply(Action::Down);
-        assert_eq!(s.apply(Action::Enter), Effect::Create("new-thing".into()));
+        assert_eq!(s.apply(Action::Enter), Effect::Create { project: None, slug: "New-Thing".into() });
 
-        let mut s = State::new(sample(), "新しい作業");
+        let mut s = State::new(sample(), "新しい作業", None, false);
+        assert_eq!(s.apply(Action::Enter), Effect::Create { project: None, slug: "新しい作業".into() });
+
+        let mut s = State::new(sample(), "a:b", None, false);
         assert_eq!(s.apply(Action::Enter), Effect::None);
-        assert!(s.status().unwrap().contains("slug にできません"));
+        assert!(s.status().unwrap().contains("`:` は使えません"));
         // 次の操作でメッセージは消える
         s.apply(Action::Up);
         assert!(s.status().is_none());
@@ -406,7 +417,7 @@ pub(crate) mod tests {
 
     #[test]
     fn enter_on_room_and_selection_bounds() {
-        let mut s = State::new(sample(), "");
+        let mut s = State::new(sample(), "", None, false);
         s.apply(Action::Up);
         assert_eq!(s.selected(), 0);
         for _ in 0..10 {
@@ -416,7 +427,7 @@ pub(crate) mod tests {
         assert_eq!(s.apply(Action::Enter), Effect::Enter(PathBuf::from("/w/2026-11-02-fix-bug")));
         assert_eq!(s.apply(Action::Quit), Effect::Quit);
 
-        let mut empty = State::new(Vec::new(), "");
+        let mut empty = State::new(Vec::new(), "", None, false);
         assert_eq!(empty.row_count(), 0);
         assert_eq!(empty.apply(Action::Down), Effect::None);
         assert_eq!(empty.apply(Action::Enter), Effect::None);
@@ -425,7 +436,7 @@ pub(crate) mod tests {
 
     #[test]
     fn show_done_toggle_keeps_selection_by_path() {
-        let mut s = State::new(sample(), "");
+        let mut s = State::new(sample(), "", None, false);
         s.apply(Action::Down);
         s.apply(Action::Down); // fix-bug
         s.apply(Action::CycleSort); // 作成日順: fix-bug, report, novel-review
@@ -438,7 +449,7 @@ pub(crate) mod tests {
 
     #[test]
     fn toggling_done_hides_room_and_clamps_selection() {
-        let mut s = State::new(sample(), "");
+        let mut s = State::new(sample(), "", None, false);
         s.apply(Action::Down);
         s.apply(Action::Down); // 最後の行（fix-bug）
         let path = PathBuf::from("/w/2026-11-02-fix-bug");
@@ -459,7 +470,7 @@ pub(crate) mod tests {
 
     #[test]
     fn open_and_preview_toggle() {
-        let mut s = State::new(sample(), "");
+        let mut s = State::new(sample(), "", None, false);
         assert_eq!(s.apply(Action::Open), Effect::Open(PathBuf::from("/w/acme/2026-11-01-report")));
         assert!(s.show_preview());
         s.apply(Action::TogglePreview);
@@ -468,7 +479,7 @@ pub(crate) mod tests {
 
     #[test]
     fn typing_resets_selection_and_backspace_restores() {
-        let mut s = State::new(sample(), "");
+        let mut s = State::new(sample(), "", None, false);
         s.apply(Action::Down);
         type_str(&mut s, "zzzz");
         assert_eq!(s.selected(), 0);
@@ -478,5 +489,51 @@ pub(crate) mod tests {
         }
         assert_eq!(s.query(), "");
         assert_eq!(s.visible_count(), 3);
+    }
+
+    #[test]
+    fn project_filter_limits_rooms_and_done_counts_case_insensitively() {
+        let mut items = sample();
+        items.push(item("2026-11-03-done", Some("AcMe"), "", true, None));
+        let mut s = State::new(items, "", Some("ACME"), false);
+        assert_eq!(s.project(), Some("ACME"));
+        assert_eq!(s.total(), 2);
+        assert_eq!(s.hidden_done(), 1);
+        assert_eq!(names(&s), ["acme/2026-11-01-report"]);
+        assert_eq!(s.apply(Action::Enter), Effect::Enter(PathBuf::from("/w/acme/2026-11-01-report")));
+        s.apply(Action::ToggleShowDone);
+        assert_eq!(s.visible_count(), 2);
+        assert_eq!(s.hidden_done(), 0);
+        let empty = State::new(sample(), "", Some("missing"), false);
+        assert_eq!(empty.total(), 0);
+        assert_eq!(empty.hidden_done(), 0);
+    }
+
+    #[test]
+    fn create_targets_use_filter_or_explicit_project_and_uppercase_setting() {
+        let cases = [
+            ("調査", None, false, None, "調査"),
+            ("調査", Some("ACME"), false, Some("ACME"), "調査"),
+            ("other/x", Some("ACME"), false, Some("other"), "x"),
+            ("other/x", None, true, Some("OTHER"), "x"),
+            ("acme営業/ Fix Bug ", None, true, Some("ACME営業"), "Fix-Bug"),
+            ("My_Task", Some("acme"), true, Some("ACME"), "My_Task"),
+        ];
+        for (query, filter, uppercase, project, slug) in cases {
+            let mut s = State::new(Vec::new(), query, filter, uppercase);
+            let label = project.map_or_else(|| format!("+{slug}"), |p| format!("+{p}/{slug}"));
+            assert_eq!(names(&s), [label]);
+            assert_eq!(
+                s.apply(Action::Enter),
+                Effect::Create { project: project.map(str::to_string), slug: slug.into() }
+            );
+        }
+        for query in ["a:b", "a/b/c", "/x", "x/", "_hidden/x", "CON/x"] {
+            let mut s = State::new(Vec::new(), query, Some("ACME"), false);
+            let Row::Create(Err(reason)) = s.rows().next().unwrap() else { panic!("{query}") };
+            let reason = reason.to_string();
+            assert_eq!(s.apply(Action::Enter), Effect::None);
+            assert_eq!(s.status(), Some(reason.as_str()));
+        }
     }
 }

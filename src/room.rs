@@ -38,9 +38,103 @@ impl Room {
 }
 
 pub fn is_valid_slug(s: &str) -> bool {
-    let mut chars = s.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    validate_slug(s).is_ok()
+}
+
+fn validate_name(name: &str, kind: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("{kind}は空にできません");
+    }
+    if name.starts_with(['-', '.']) {
+        bail!("{kind}の先頭に `-` と `.` は使えません: {name}");
+    }
+    if name.ends_with('.') {
+        bail!("{kind}の末尾に `.` は使えません: {name}");
+    }
+    for c in name.chars() {
+        if c.is_control() {
+            bail!("{kind}に制御文字は使えません: {c:?}");
+        }
+        if c.is_whitespace() {
+            bail!("{kind}に空白は使えません（全角空白も不可）: {name}");
+        }
+        if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+            bail!("{kind}に `{c}` は使えません: {name}");
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_slug(slug: &str) -> Result<()> {
+    validate_name(slug, "部屋の名前")
+}
+
+pub fn validate_project(project: &str) -> Result<()> {
+    validate_name(project, "案件名")?;
+    if project.starts_with('_') {
+        bail!("案件名の先頭に `_` は使えません（隠しディレクトリとして無視されます）: {project}");
+    }
+    if parse_room_name(project).is_some() {
+        bail!("案件名に `YYYY-MM-DD-名前` の形は使えません（部屋の名前と区別できません）: {project}");
+    }
+    let stem = project.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(prefix).is_some_and(|n| n.len() == 1 && matches!(n.as_bytes()[0], b'1'..=b'9'))
+        })
+    {
+        bail!("案件名に Windows の予約名は使えません（拡張子付きも不可）: {project}");
+    }
+    Ok(())
+}
+
+/// 空白を正規化し、設定に応じて ASCII 英小文字だけを大文字にする
+pub fn normalize_project(project: &str, uppercase: bool) -> Result<String> {
+    let mut project = derive_slug(project);
+    if uppercase {
+        project.make_ascii_uppercase();
+    }
+    validate_project(&project)?;
+    Ok(project)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomTarget {
+    pub project: Option<String>,
+    pub slug: String,
+}
+
+impl RoomTarget {
+    pub fn label(&self) -> String {
+        match &self.project {
+            Some(p) => format!("{p}/{}", self.slug),
+            None => self.slug.clone(),
+        }
+    }
+
+    pub fn path(&self, root: &Path, date: NaiveDate) -> PathBuf {
+        let parent = self.project.as_ref().map_or_else(|| root.to_path_buf(), |p| root.join(p));
+        parent.join(format!("{}-{}", date.format("%Y-%m-%d"), self.slug))
+    }
+}
+
+/// `案件/名前` または名前と `-p` を解釈する。TUI の絞り込みは `/` のないときだけ project に渡す
+pub fn parse_new_name(input: &str, project: Option<&str>, uppercase: bool) -> Result<RoomTarget> {
+    let (project, slug) = if let Some((p, slug)) = input.split_once('/') {
+        if project.is_some() {
+            bail!("`案件/名前` と `-p <案件>` は併用できません");
+        }
+        if slug.contains('/') || p.trim().is_empty() || slug.trim().is_empty() {
+            bail!("`/` は案件と部屋の区切りとして1つだけ使い、両側に名前を指定してください");
+        }
+        (Some(p), slug)
+    } else {
+        (project, input)
+    };
+    let slug = derive_slug(slug);
+    validate_slug(&slug)?;
+    let project = project.map(|p| normalize_project(p, uppercase)).transpose()?;
+    Ok(RoomTarget { project, slug })
 }
 
 /// `YYYY-MM-DD-<slug>` を日付と slug に分ける
@@ -167,9 +261,7 @@ pub fn ensure_root(settings: &Settings) -> Result<()> {
 }
 
 pub fn ensure_project(settings: &Settings, project: &str) -> Result<PathBuf> {
-    if !is_valid_slug(project) {
-        bail!("案件名は英小文字・数字・ハイフンのみ使えます: {project}");
-    }
+    let project = normalize_project(project, settings.config.project_uppercase)?;
     let dir = settings.root.join(project);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
@@ -184,30 +276,71 @@ pub struct NewRoom<'a> {
 
 /// 部屋を作る。既にあれば作らずにそのパスを返す（戻り値の bool は新規作成したか）
 pub fn create(settings: &Settings, req: &NewRoom) -> Result<(PathBuf, bool)> {
-    if !is_valid_slug(req.slug) {
-        bail!("slug は英小文字・数字・ハイフンのみ使えます（日本語の説明は2つ目の引数へ）: {}", req.slug);
-    }
-    ensure_root(settings)?;
-    let parent = match req.project {
-        Some(p) => ensure_project(settings, p)?,
-        None => settings.root.clone(),
-    };
-    let path = parent.join(format!("{}-{}", req.date.format("%Y-%m-%d"), req.slug));
+    // 検査が済むまで、ルート・テンプレート・案件も作らない。
+    let target = parse_new_name(req.slug, req.project, settings.config.project_uppercase)?;
+    let path = target.path(&settings.root, req.date);
     if path.exists() {
+        ensure_root(settings)?;
         return Ok((path, false));
     }
+    check_claude_collision(settings, &path)?;
+    ensure_root(settings)?;
+    if let Some(p) = &target.project {
+        ensure_project(settings, p)?;
+    }
     std::fs::create_dir(&path)?;
-    let title = if req.description.is_empty() { req.slug } else { req.description };
+    let title = if req.description.is_empty() { &target.slug } else { req.description };
     write_text(&path.join(README), &format!("# {title}\n\n- created: {}\n", Local::now().format("%Y-%m-%d %H:%M")))?;
-    crate::rules::write_room_rules(settings, &path, req.project)?;
+    crate::rules::write_room_rules(settings, &path, target.project.as_deref())?;
+    warn_existing_claude_history(settings, &path)?;
     Ok((path, true))
 }
 
-/// 名前から slug を作る（小文字にし、`_` と空白を `-` に置き換える）。結果が slug として正しいとは限らない
+/// 前後の空白を除き、途中の空白の並びを `-` にする。大小文字と `_` は保つ
 pub fn derive_slug(s: &str) -> String {
-    let lowered = s.trim().to_lowercase();
-    let re = regex::Regex::new(r"[_\s]+").expect("static regex");
-    re.replace_all(&lowered, "-").into_owned()
+    s.split_whitespace().collect::<Vec<_>>().join("-")
+}
+
+/// Claude Code が `projects/` 配下で使うディレクトリ名（英数字以外を `-` に置換）
+pub fn claude_project_key(path: &Path) -> String {
+    path.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// 設定の作業ルートが相対パスでも、Claude と同じ絶対パスから履歴名を計算する
+pub fn claude_history_key(path: &Path) -> Result<String> {
+    let absolute = std::path::absolute(path).with_context(|| format!("絶対パスにできません: {}", path.display()))?;
+    Ok(claude_project_key(&absolute))
+}
+
+/// 新しい部屋と、既存のすべての部屋の履歴名を比較する。長い名前の Claude 側の規則は対象外
+pub fn check_claude_collision(settings: &Settings, path: &Path) -> Result<()> {
+    let key = claude_history_key(path)?;
+    if key.len() > 200 {
+        return Ok(());
+    }
+    for room in scan(&settings.root, None)? {
+        if key.eq_ignore_ascii_case(&claude_history_key(&room.path)?) {
+            let name = path.strip_prefix(&settings.root).unwrap_or(path).display();
+            bail!(
+                "`{name}` は、Claude Code の履歴の名前が `{}` とぶつかります。名前に英数字を加えてください",
+                room.label()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// 既存の部屋がなくても、削除済みの部屋の履歴が残っている場合は案内する
+pub fn warn_existing_claude_history(settings: &Settings, path: &Path) -> Result<()> {
+    let key = claude_history_key(path)?;
+    let dir = settings.claude_dir.join("projects").join(&key);
+    if key.len() <= 200 && dir.is_dir() {
+        eprintln!(
+            "警告: Claude Code の履歴が既にあります。削除した部屋の履歴が残っている可能性があります: {}",
+            dir.display()
+        );
+    }
+    Ok(())
 }
 
 pub fn set_done(room: &Room, done: bool) -> Result<()> {
@@ -236,20 +369,80 @@ mod tests {
 
     #[test]
     fn slug_validation() {
-        assert!(is_valid_slug("fix-bug"));
-        assert!(is_valid_slug("2fa"));
-        assert!(!is_valid_slug("-x"));
-        assert!(!is_valid_slug("Bad_Slug"));
-        assert!(!is_valid_slug("日本語"));
-        assert!(!is_valid_slug(""));
+        for name in ["fix-bug", "2fa", "調査", "fix_bug", "Fix-Bug", "v2", "_x"] {
+            assert!(is_valid_slug(name), "{name}");
+        }
+        for name in [
+            "a/b", r"a\b", "a:b", "a*b", "a?b", "a\"b", "a<b", "a>b", "a|b", "末尾.", "-x", ".x", "", "a b", "a　b",
+            "a\0b", "a\nb",
+        ] {
+            assert!(!is_valid_slug(name), "{name:?}");
+        }
+        assert!(validate_slug("a:b").unwrap_err().to_string().contains("`:`"));
+        assert!(validate_slug("a b").unwrap_err().to_string().contains("空白"));
+        assert!(validate_slug("a\0b").unwrap_err().to_string().contains("制御文字"));
+    }
+
+    #[test]
+    fn project_validation() {
+        for name in ["ACME営業", "acme", "Fix_Bug", "COM0", "COM10", "console"] {
+            assert!(validate_project(name).is_ok(), "{name}");
+        }
+        for name in [
+            "_x",
+            ".x",
+            "2026-11-03-x",
+            "CON",
+            "con",
+            "PRN",
+            "aux",
+            "nul.txt",
+            "COM1",
+            "com9.md",
+            "LPT1",
+            "lpt9.log",
+            "a/b",
+            r"a\b",
+            "a:b",
+            "a b",
+            "-x",
+            "末尾.",
+            "",
+        ] {
+            assert!(validate_project(name).is_err(), "{name}");
+        }
     }
 
     #[test]
     fn slug_derivation() {
-        assert_eq!(derive_slug("novel_review"), "novel-review");
-        assert_eq!(derive_slug("My Task"), "my-task");
-        assert_eq!(derive_slug(" Fix  Bug "), "fix-bug");
-        assert!(!is_valid_slug(&derive_slug("不具合")));
+        assert_eq!(derive_slug("novel_review"), "novel_review");
+        assert_eq!(derive_slug("My Task"), "My-Task");
+        assert_eq!(derive_slug(" Fix  Bug　 "), "Fix-Bug");
+        assert_eq!(derive_slug("　調査　 分析  x　"), "調査-分析-x");
+        assert!(is_valid_slug(&derive_slug("不具合")));
+        assert_eq!(normalize_project(" acme営業 ", false).unwrap(), "acme営業");
+        assert_eq!(normalize_project(" acme営業 ", true).unwrap(), "ACME営業");
+        assert_eq!(normalize_project("école　営業", true).unwrap(), "éCOLE-営業");
+    }
+
+    #[test]
+    fn new_name_parsing() {
+        let cases = [
+            (" 調査 ", None, false, None, "調査"),
+            (" ACME / My Task ", None, false, Some("ACME"), "My-Task"),
+            ("Fix_Bug", Some(" acme営業 "), false, Some("acme営業"), "Fix_Bug"),
+            ("Fix_Bug", Some("acme営業"), true, Some("ACME営業"), "Fix_Bug"),
+            ("acme営業/調査", None, true, Some("ACME営業"), "調査"),
+        ];
+        for (input, project, uppercase, expected_project, slug) in cases {
+            let target = parse_new_name(input, project, uppercase).unwrap();
+            assert_eq!(target.project.as_deref(), expected_project);
+            assert_eq!(target.slug, slug);
+        }
+        for input in ["a/b/c", "/x", "a/", " /x", "a/ ", r"a\b"] {
+            assert!(parse_new_name(input, None, false).is_err(), "{input}");
+        }
+        assert!(parse_new_name("a/b", Some("a"), false).unwrap_err().to_string().contains("併用"));
     }
 
     #[test]
@@ -319,5 +512,60 @@ mod tests {
         // 既にあれば作らない
         let (again, created) = create(&s, &NewRoom { slug: "a", description: "", project: None, date }).unwrap();
         assert_eq!((again, created), (a, false));
+    }
+
+    #[test]
+    fn invalid_names_do_not_create_root_or_template() {
+        let d = tempfile::tempdir().unwrap();
+        let s = test_settings(d.path());
+        let date = NaiveDate::from_ymd_opt(2026, 11, 3).unwrap();
+        for (slug, project) in [("a:b", None), ("ok", Some("_bad")), ("ok", Some("CON"))] {
+            assert!(create(&s, &NewRoom { slug, description: "", project, date }).is_err());
+            assert!(!s.root.exists());
+            assert!(!crate::rules::template_path(&s).exists());
+        }
+        assert!(ensure_project(&s, "_bad").is_err());
+        assert!(!s.root.exists());
+    }
+
+    #[test]
+    fn history_collision_prevents_creation_but_existing_rooms_are_entered() {
+        let d = tempfile::tempdir().unwrap();
+        let s = test_settings(d.path());
+        let date = NaiveDate::from_ymd_opt(2026, 11, 3).unwrap();
+        let req = NewRoom { slug: "調査", description: "", project: None, date };
+        let (first, _) = create(&s, &req).unwrap();
+        // 完了済みも検査する。
+        set_done_at(&first, true).unwrap();
+        let error = create(&s, &NewRoom { slug: "分析", ..req }).unwrap_err().to_string();
+        assert!(error.contains("2026-11-03-調査") && error.contains("英数字"), "{error}");
+        assert!(!s.root.join("2026-11-03-分析").exists());
+        assert!(create(&s, &NewRoom { slug: "分析中", ..req }).unwrap().1);
+        // 以前から衝突する部屋があっても、既存の部屋へは移動できる。
+        std::fs::create_dir(s.root.join("2026-11-03-報告")).unwrap();
+        assert_eq!(create(&s, &req).unwrap(), (first, false));
+    }
+
+    #[test]
+    fn collision_checks_all_projects_and_ignores_ascii_case() {
+        let d = tempfile::tempdir().unwrap();
+        let s = test_settings(d.path());
+        std::fs::create_dir_all(s.root.join("調査").join("2026-11-03-Task")).unwrap();
+        let dest = s.root.join("分析").join("2026-11-03-task");
+        assert!(check_claude_collision(&s, &dest).is_err());
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn long_history_keys_are_not_checked() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = test_settings(d.path());
+        // 各要素を短く保ちながら、履歴の名前を 200 文字より長くする。
+        while claude_project_key(&s.root).len() <= 200 {
+            s.root.push("long-parent-directory");
+        }
+        std::fs::create_dir_all(s.root.join("2026-11-03-調査")).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 11, 3).unwrap();
+        assert!(create(&s, &NewRoom { slug: "分析", description: "", project: None, date }).unwrap().1);
     }
 }

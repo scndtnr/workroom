@@ -117,7 +117,13 @@ Register-ArgumentCompleter -Native -CommandName __CMD__ -ScriptBlock {
     } elseif ($words[0] -in @('done', 'undone', 'open') -and $words.Count -eq 1) {
         $__wr_exe = (Get-Command workroom -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
         if (-not $__wr_exe) { return }
-        $candidates = @(& $__wr_exe names 2>$null)
+        $__wr_encoding = [Console]::OutputEncoding
+        try {
+            [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+            $candidates = @(& $__wr_exe names 2>$null)
+        } finally {
+            [Console]::OutputEncoding = $__wr_encoding
+        }
     } else {
         return
     }

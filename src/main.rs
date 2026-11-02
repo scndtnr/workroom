@@ -123,8 +123,9 @@ enum RulesCmd {
 
 #[derive(Args)]
 struct NewArgs {
-    /// 英小文字・数字・ハイフン（例: fix-bug）
-    slug: String,
+    /// 部屋の名前、または案件/名前（例: fix_bug、ACME/調査。省略時は -p が必要）
+    #[arg(value_name = "名前")]
+    slug: Option<String>,
     /// README.md の1行目に書く説明（日本語可）
     #[arg(value_name = "説明")]
     description: Vec<String>,
@@ -169,7 +170,8 @@ struct NameArg {
 struct ImportArgs {
     /// 移行するディレクトリ
     path: PathBuf,
-    /// 英小文字・数字・ハイフン（省略時は名前から作る）
+    /// 部屋の名前（省略時は移行元の名前から作る）
+    #[arg(value_name = "名前")]
     slug: Option<String>,
     /// README.md の1行目に書く説明（README.md がない場合のみ）
     #[arg(value_name = "説明")]
@@ -220,7 +222,8 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     let cwd_file = cli.cwd_file.as_deref();
     let Some(command) = cli.command else {
-        return pick(cwd_file, &cli.query.join(" "));
+        let settings = Settings::load()?;
+        return pick(&settings, cwd_file, &cli.query.join(" "), None, None, None);
     };
     // init は設定を読まずに動かす（設定ファイルが壊れていてもシェルの起動を止めない）
     if let Cmd::Init { shell, cmd } = &command {
@@ -231,18 +234,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let settings = Settings::load()?;
     match command {
         Cmd::New(a) => {
-            let date = match &a.date {
-                Some(d) => room::parse_date(d)?,
-                None => room::today(&settings),
-            };
-            let description = a.description.join(" ");
-            let req = room::NewRoom { slug: &a.slug, description: &description, project: a.project.as_deref(), date };
-            let (path, created) = room::create(&settings, &req)?;
-            if created {
-                eprintln!("作成しました: {}", path.display());
-            } else {
-                eprintln!("既にあるため移動します: {}", path.display());
+            if a.slug.is_none() && a.project.is_none() {
+                eprintln!("workroom: 部屋の名前か、`-p <案件>` を指定してください");
+                return Ok(ExitCode::from(2));
             }
+            let date = a.date.as_deref().map(room::parse_date).transpose()?;
             let then = if a.claude {
                 Some("claude")
             } else if a.codex {
@@ -250,6 +246,24 @@ fn run(cli: Cli) -> Result<ExitCode> {
             } else {
                 None
             };
+            let Some(slug) = a.slug else {
+                let project =
+                    room::normalize_project(a.project.as_deref().unwrap(), settings.config.project_uppercase)?;
+                return pick(&settings, cwd_file, "", Some(&project), date, then);
+            };
+            let description = a.description.join(" ");
+            let req = room::NewRoom {
+                slug: &slug,
+                description: &description,
+                project: a.project.as_deref(),
+                date: date.unwrap_or_else(|| room::today(&settings)),
+            };
+            let (path, created) = room::create(&settings, &req)?;
+            if created {
+                eprintln!("作成しました: {}", path.display());
+            } else {
+                eprintln!("既にあるため移動します: {}", path.display());
+            }
             enter(&settings, cwd_file, &path, then)?;
         }
         Cmd::Ls(a) => {
@@ -305,27 +319,50 @@ fn enter(settings: &Settings, cwd_file: Option<&Path>, path: &Path, then: Option
     shell::write_cwd_file(cwd_file, path, then)
 }
 
-/// サブコマンドなし：TUI ピッカー（検索語があれば入力済みの状態で開く）
-fn pick(cwd_file: Option<&Path>, query: &str) -> Result<ExitCode> {
-    let settings = Settings::load()?;
+/// TUI ピッカー（検索語・案件の絞り込みを指定できる）
+fn pick(
+    settings: &Settings,
+    cwd_file: Option<&Path>,
+    query: &str,
+    project: Option<&str>,
+    date: Option<chrono::NaiveDate>,
+    then: Option<&str>,
+) -> Result<ExitCode> {
     if !tui::has_terminal() {
         eprintln!("workroom: ピッカーは端末でのみ使えます。一覧は `wk ls` で表示できます");
         return Ok(ExitCode::from(2));
     }
     // 端末を元に戻してから、メッセージの表示と移動先の書き出しを行う
-    match tui::run(&settings, query)? {
+    finish_pick(settings, cwd_file, tui::run(settings, query, project)?, date, then)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn finish_pick(
+    settings: &Settings,
+    cwd_file: Option<&Path>,
+    outcome: tui::Outcome,
+    date: Option<chrono::NaiveDate>,
+    then: Option<&str>,
+) -> Result<()> {
+    match outcome {
         tui::Outcome::Quit => {}
-        tui::Outcome::Enter(path) => enter(&settings, cwd_file, &path, None)?,
-        tui::Outcome::Create(slug) => {
-            let req = room::NewRoom { slug: &slug, description: "", project: None, date: room::today(&settings) };
-            let (path, created) = room::create(&settings, &req)?;
+        tui::Outcome::Enter(path) => enter(settings, cwd_file, &path, then)?,
+        tui::Outcome::Create { project, slug } => {
+            let req = room::NewRoom {
+                slug: &slug,
+                description: "",
+                project: project.as_deref(),
+                // 日付の指定がなければ、従来どおり作成時点の「今日」を使う。
+                date: date.unwrap_or_else(|| room::today(settings)),
+            };
+            let (path, created) = room::create(settings, &req)?;
             if created {
                 eprintln!("作成しました: {}", path.display());
             }
-            enter(&settings, cwd_file, &path, None)?;
+            enter(settings, cwd_file, &path, then)?;
         }
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 fn set_done(settings: &Settings, name: Option<&str>, done: bool) -> Result<()> {
@@ -361,4 +398,37 @@ fn show_config(settings: &Settings, init: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picker_outcomes_keep_creation_date_project_and_agent_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            config: config::Config::default(),
+            config_path: dir.path().join("config.toml"),
+            root: dir.path().join("rooms"),
+            state_dir: dir.path().join("state"),
+            claude_dir: dir.path().join("claude"),
+        };
+        let file = dir.path().join("cwd");
+        let date = room::parse_date("2000-01-02").unwrap();
+        for command in ["claude", "codex"] {
+            let slug = format!("調査-{command}");
+            let outcome = tui::Outcome::Create { project: Some("ACME".into()), slug: slug.clone() };
+            finish_pick(&settings, Some(&file), outcome, Some(date), Some(command)).unwrap();
+            let path = settings.root.join("ACME").join(format!("2000-01-02-{slug}"));
+            assert!(path.join("README.md").is_file());
+            let expected = format!("{}\n{command}\n", path.display());
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), expected);
+            finish_pick(&settings, Some(&file), tui::Outcome::Enter(path), Some(date), Some(command)).unwrap();
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), expected);
+        }
+        std::fs::write(&file, "").unwrap();
+        finish_pick(&settings, Some(&file), tui::Outcome::Quit, None, Some("claude")).unwrap();
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "");
+    }
 }
