@@ -93,9 +93,12 @@
 - [x] Releases：`v*` のタグの push で、Windows x64（msvc）と Linux x64（musl、静的リンク）をビルドして GitHub Releases に置く。最初は `v0.1.0`
   - タグと Cargo.toml の version が一致しなければ失敗する。各アーカイブに `.sha256` を付ける。リリースのジョブだけ `contents: write`。GitHub 上での実行は未確認
 - [x] 公開前の確認：コミットの作者が noreply だけか（`git log --format='%an <%ae>'`）、全ファイルと全コミットにユーザー名・個人のフォルダ名・メールアドレスが含まれないか（`git log -p` も対象）
-- [ ] GitHub リポジトリ `scndtnr/workroom` を **private** で作成して push（ユーザーの確認を取ってから）。リリース（`v0.1.0`）まで行う
+- [x] GitHub リポジトリ `scndtnr/workroom` を **private** で作成して push（ユーザーの確認を取ってから）。リリース（`v0.1.0`）まで行う
+  - 2026-11-03：ブランチ名を `master` から `main` に変えて push した。CI が通り、`v0.1.0` のリリース（Windows の zip と Linux の tar.gz、`.sha256`）ができた。ダウンロードしてチェックサムと `--version` を確認した。Linux 版は static-pie
 - [ ] 保護設定（public にする前に。private の無料プランでは使えないものは public 化と同時に）
-  - main のルールセット：force push と削除の禁止、CI の通過を必須に（1人で開発するので、PR のレビュー必須にはしない。ユーザーと確認）
+  - main のルールセット：force push と削除の禁止、PR を通したマージと CI の通過を必須に（レビューの承認は不要。2026-11-03 にユーザーと決定）
+  - 2026-11-03 に private で設定済み：Dependabot alerts と security updates、ワークフローの既定権限を読み取りのみに
+  - private の無料プランで使えず、public 化と同時に行うもの：ルールセット（403）、Secret scanning と push protection（422）、Private vulnerability reporting（404）、外部からの PR のワークフローの承認制
   - Secret scanning と push protection、Dependabot alerts / security updates、`.github/dependabot.yml`（cargo と github-actions）
   - Private vulnerability reporting と `SECURITY.md`
   - Actions：既定のワークフロー権限を読み取りのみに、外部からの PR のワークフローは承認制に
