@@ -1,0 +1,117 @@
+name: リリース
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: タグとバージョンを照合
+    runs-on: ubuntu-latest
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Cargo.toml と照合
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+
+          with open("Cargo.toml", "rb") as manifest:
+              version = tomllib.load(manifest)["package"]["version"]
+          tag = os.environ["TAG"]
+          if tag != f"v{version}":
+              raise SystemExit(f"タグ {tag} と Cargo.toml の version {version} が一致しません")
+          PY
+
+  build:
+    name: ビルド (${{ matrix.target }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+    env:
+      TAG: ${{ github.ref_name }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust を準備
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable ブランチ
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Rust のキャッシュ
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: musl のビルド環境を準備
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: リリースビルド
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Windows のアーカイブと SHA-256 を作成
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist, package | Out-Null
+          Copy-Item -LiteralPath "target/$env:TARGET/release/workroom.exe", README.md, LICENSE -Destination package
+          $archive = "workroom-${env:TAG}-${env:TARGET}.zip"
+          $archivePath = Join-Path dist $archive
+          Compress-Archive -LiteralPath package/workroom.exe, package/README.md, package/LICENSE -DestinationPath $archivePath
+          $checksum = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksumPath = (Resolve-Path -LiteralPath $archivePath).Path + '.sha256'
+          [IO.File]::WriteAllText($checksumPath, "$checksum  $archive`n", [Text.UTF8Encoding]::new($false))
+      - name: Linux のアーカイブと SHA-256 を作成
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p dist package
+          cp "target/$TARGET/release/workroom" README.md LICENSE package/
+          archive="workroom-$TAG-$TARGET.tar.gz"
+          tar -czf "dist/$archive" -C package workroom README.md LICENSE
+          cd dist
+          sha256sum "$archive" > "$archive.sha256"
+      - name: 成果物を保存
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: workroom-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub Releases に公開
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 成果物を取得
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: workroom-*
+          merge-multiple: true
+          path: dist
+      - name: リリースを作成
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          tag="$TAG"
+          gh release create "$tag" --title "$tag" --generate-notes dist/*

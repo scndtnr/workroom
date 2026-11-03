@@ -2,10 +2,13 @@
 name = "workroom"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "AI エージェント（Claude Code / Codex など）に日付付きの作業部屋を用意する CLI"
 license = "MIT"
 repository = "https://github.com/scndtnr/workroom"
 readme = "README.md"
+keywords = ["cli", "ai-agent", "claude", "codex", "workspace"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1"
