@@ -96,12 +96,14 @@
 - [x] GitHub リポジトリ `scndtnr/workroom` を **private** で作成して push（ユーザーの確認を取ってから）。リリース（`v0.1.0`）まで行う
   - 2026-11-03：ブランチ名を `master` から `main` に変えて push した。CI が通り、`v0.1.0` のリリース（Windows の zip と Linux の tar.gz、`.sha256`）ができた。ダウンロードしてチェックサムと `--version` を確認した。Linux 版は static-pie
 - [ ] 保護設定（public にする前に。private の無料プランでは使えないものは public 化と同時に）
-  - main のルールセット：force push と削除の禁止、PR を通したマージと CI の通過を必須に（レビューの承認は不要。2026-11-03 にユーザーと決定）
-  - 2026-11-03 に private で設定済み：Dependabot alerts と security updates、ワークフローの既定権限を読み取りのみに
-  - private の無料プランで使えず、public 化と同時に行うもの：ルールセット（403）、Secret scanning と push protection（422）、Private vulnerability reporting（404）、外部からの PR のワークフローの承認制
-  - Secret scanning と push protection、Dependabot alerts / security updates、`.github/dependabot.yml`（cargo と github-actions）
-  - Private vulnerability reporting と `SECURITY.md`
-  - Actions：既定のワークフロー権限を読み取りのみに、外部からの PR のワークフローは承認制に
+  - 済（2026-11-03、private で設定）：Dependabot alerts と security updates、`.github/dependabot.yml`（cargo と github-actions）、`SECURITY.md`、ワークフローの既定権限を読み取りのみに
+  - 残り（private の無料プランでは API が通らないので、public 化と同時に行う）：
+    - main のルールセット（403）：force push と削除の禁止、PR を通したマージと CI の通過を必須に（レビューの承認は不要。2026-11-03 にユーザーと決定）
+      - 必須にするチェック名：`検証 (windows-latest)`・`検証 (ubuntu-latest)`・`Rust 1.88 で検証`。ジョブ名を変えると、必須のチェックが待機中のまま止まるので、ルールセットも直す
+      - 有効にした後は、main に直接 push できない（ブランチ → PR → CI → マージ）
+    - Secret scanning と push protection（422）
+    - Private vulnerability reporting（404）
+    - 外部からの PR のワークフローを承認制に
 - [ ] public 化はユーザーの確認を取ってから
 
 ## 未決事項
