@@ -16,6 +16,6 @@
 - マイルストーンごとに `cargo test` / `cargo clippy` / `cargo fmt --check` を通してからコミットする。
 
 ## Claude Code と Codex の役割分担
-- 両方を使うときは、`claude-codex-handoff` スキル（`.claude/skills/` と `.agents/skills/` に同じものがある）に従う。
+- 両方を使うときは、作業者のグローバルスキル `agent-handoff`（引き継ぎ書・呼び出し方）があればそれに従う。
   - Claude Code：ユーザーとのやり取り、計画、レビュー、コミット。
   - Codex：合意した計画の実装（コード・テスト・確認のコマンド）。コミットはしない。
