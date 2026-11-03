@@ -123,7 +123,7 @@ enum RulesCmd {
 
 #[derive(Args)]
 struct NewArgs {
-    /// 部屋の名前、または案件/名前（例: fix_bug、ACME/調査。省略時は -p が必要）
+    /// 部屋の名前、または案件/名前（例: fix_bug、EXAMPLE/調査。省略時は -p が必要）
     #[arg(value_name = "名前")]
     slug: Option<String>,
     /// README.md の1行目に書く説明（日本語可）
