@@ -325,7 +325,7 @@ pub(crate) mod tests {
     fn sample() -> Vec<Item> {
         vec![
             item("2026-11-02-fix-bug", None, "不具合調査", false, None),
-            item("2026-11-01-report", Some("acme"), "月次レポート作成", false, Some(ts(2026, 11, 3))),
+            item("2026-11-01-report", Some("example"), "月次レポート作成", false, Some(ts(2026, 11, 3))),
             item("2026-10-01-old-done", None, "", true, None),
             item("2026-06-14-novel-review", None, "小説の講評", false, Some(ts(2026, 11, 2) + 60)),
         ]
@@ -350,7 +350,7 @@ pub(crate) mod tests {
     fn recent_order_falls_back_to_room_date() {
         let s = State::new(sample(), "", None, false);
         // report(11/3 使用) > novel-review(11/2 00:01 使用) > fix-bug(作成 11/2 00:00)。完了済みは隠れる
-        assert_eq!(names(&s), ["acme/2026-11-01-report", "2026-06-14-novel-review", "2026-11-02-fix-bug"]);
+        assert_eq!(names(&s), ["example/2026-11-01-report", "2026-06-14-novel-review", "2026-11-02-fix-bug"]);
         assert_eq!(s.hidden_done(), 1);
     }
 
@@ -360,11 +360,11 @@ pub(crate) mod tests {
         s.apply(Action::Down); // novel-review
         s.apply(Action::CycleSort);
         assert_eq!(s.sort(), SortMode::Created);
-        assert_eq!(names(&s), ["2026-11-02-fix-bug", "acme/2026-11-01-report", "2026-06-14-novel-review"]);
+        assert_eq!(names(&s), ["2026-11-02-fix-bug", "example/2026-11-01-report", "2026-06-14-novel-review"]);
         assert_eq!(s.selected_item().unwrap().room.slug, "novel-review");
         s.apply(Action::CycleSort);
         assert_eq!(s.sort(), SortMode::Name);
-        assert_eq!(names(&s), ["2026-11-02-fix-bug", "2026-06-14-novel-review", "acme/2026-11-01-report"]);
+        assert_eq!(names(&s), ["2026-11-02-fix-bug", "2026-06-14-novel-review", "example/2026-11-01-report"]);
         s.apply(Action::CycleSort);
         assert_eq!(s.sort(), SortMode::Recent);
     }
@@ -372,8 +372,8 @@ pub(crate) mod tests {
     #[test]
     fn fuzzy_search_covers_slug_project_and_japanese_description() {
         let mut s = State::new(sample(), "", None, false);
-        type_str(&mut s, "acme");
-        assert_eq!(names(&s), ["acme/2026-11-01-report", "+acme"]);
+        type_str(&mut s, "example");
+        assert_eq!(names(&s), ["example/2026-11-01-report", "+example"]);
         s.apply(Action::Clear);
         type_str(&mut s, "講評");
         assert_eq!(names(&s), ["2026-06-14-novel-review", "+講評"]);
@@ -471,7 +471,7 @@ pub(crate) mod tests {
     #[test]
     fn open_and_preview_toggle() {
         let mut s = State::new(sample(), "", None, false);
-        assert_eq!(s.apply(Action::Open), Effect::Open(PathBuf::from("/w/acme/2026-11-01-report")));
+        assert_eq!(s.apply(Action::Open), Effect::Open(PathBuf::from("/w/example/2026-11-01-report")));
         assert!(s.show_preview());
         s.apply(Action::TogglePreview);
         assert!(!s.show_preview());
@@ -494,13 +494,13 @@ pub(crate) mod tests {
     #[test]
     fn project_filter_limits_rooms_and_done_counts_case_insensitively() {
         let mut items = sample();
-        items.push(item("2026-11-03-done", Some("AcMe"), "", true, None));
-        let mut s = State::new(items, "", Some("ACME"), false);
-        assert_eq!(s.project(), Some("ACME"));
+        items.push(item("2026-11-03-done", Some("ExAmPlE"), "", true, None));
+        let mut s = State::new(items, "", Some("EXAMPLE"), false);
+        assert_eq!(s.project(), Some("EXAMPLE"));
         assert_eq!(s.total(), 2);
         assert_eq!(s.hidden_done(), 1);
-        assert_eq!(names(&s), ["acme/2026-11-01-report"]);
-        assert_eq!(s.apply(Action::Enter), Effect::Enter(PathBuf::from("/w/acme/2026-11-01-report")));
+        assert_eq!(names(&s), ["example/2026-11-01-report"]);
+        assert_eq!(s.apply(Action::Enter), Effect::Enter(PathBuf::from("/w/example/2026-11-01-report")));
         s.apply(Action::ToggleShowDone);
         assert_eq!(s.visible_count(), 2);
         assert_eq!(s.hidden_done(), 0);
@@ -513,11 +513,11 @@ pub(crate) mod tests {
     fn create_targets_use_filter_or_explicit_project_and_uppercase_setting() {
         let cases = [
             ("調査", None, false, None, "調査"),
-            ("調査", Some("ACME"), false, Some("ACME"), "調査"),
-            ("other/x", Some("ACME"), false, Some("other"), "x"),
+            ("調査", Some("EXAMPLE"), false, Some("EXAMPLE"), "調査"),
+            ("other/x", Some("EXAMPLE"), false, Some("other"), "x"),
             ("other/x", None, true, Some("OTHER"), "x"),
-            ("acme営業/ Fix Bug ", None, true, Some("ACME営業"), "Fix-Bug"),
-            ("My_Task", Some("acme"), true, Some("ACME"), "My_Task"),
+            ("example営業/ Fix Bug ", None, true, Some("EXAMPLE営業"), "Fix-Bug"),
+            ("My_Task", Some("example"), true, Some("EXAMPLE"), "My_Task"),
         ];
         for (query, filter, uppercase, project, slug) in cases {
             let mut s = State::new(Vec::new(), query, filter, uppercase);
@@ -529,7 +529,7 @@ pub(crate) mod tests {
             );
         }
         for query in ["a:b", "a/b/c", "/x", "x/", "_hidden/x", "CON/x"] {
-            let mut s = State::new(Vec::new(), query, Some("ACME"), false);
+            let mut s = State::new(Vec::new(), query, Some("EXAMPLE"), false);
             let Row::Create(Err(reason)) = s.rows().next().unwrap() else { panic!("{query}") };
             let reason = reason.to_string();
             assert_eq!(s.apply(Action::Enter), Effect::None);

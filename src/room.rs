@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn project_validation() {
-        for name in ["ACME営業", "acme", "Fix_Bug", "COM0", "COM10", "console"] {
+        for name in ["EXAMPLE営業", "example", "Fix_Bug", "COM0", "COM10", "console"] {
             assert!(validate_project(name).is_ok(), "{name}");
         }
         for name in [
@@ -420,8 +420,8 @@ mod tests {
         assert_eq!(derive_slug(" Fix  Bug　 "), "Fix-Bug");
         assert_eq!(derive_slug("　調査　 分析  x　"), "調査-分析-x");
         assert!(is_valid_slug(&derive_slug("不具合")));
-        assert_eq!(normalize_project(" acme営業 ", false).unwrap(), "acme営業");
-        assert_eq!(normalize_project(" acme営業 ", true).unwrap(), "ACME営業");
+        assert_eq!(normalize_project(" example営業 ", false).unwrap(), "example営業");
+        assert_eq!(normalize_project(" example営業 ", true).unwrap(), "EXAMPLE営業");
         assert_eq!(normalize_project("école　営業", true).unwrap(), "éCOLE-営業");
     }
 
@@ -429,10 +429,10 @@ mod tests {
     fn new_name_parsing() {
         let cases = [
             (" 調査 ", None, false, None, "調査"),
-            (" ACME / My Task ", None, false, Some("ACME"), "My-Task"),
-            ("Fix_Bug", Some(" acme営業 "), false, Some("acme営業"), "Fix_Bug"),
-            ("Fix_Bug", Some("acme営業"), true, Some("ACME営業"), "Fix_Bug"),
-            ("acme営業/調査", None, true, Some("ACME営業"), "調査"),
+            (" EXAMPLE / My Task ", None, false, Some("EXAMPLE"), "My-Task"),
+            ("Fix_Bug", Some(" example営業 "), false, Some("example営業"), "Fix_Bug"),
+            ("Fix_Bug", Some("example営業"), true, Some("EXAMPLE営業"), "Fix_Bug"),
+            ("example営業/調査", None, true, Some("EXAMPLE営業"), "調査"),
         ];
         for (input, project, uppercase, expected_project, slug) in cases {
             let target = parse_new_name(input, project, uppercase).unwrap();
@@ -476,9 +476,9 @@ mod tests {
             std::fs::create_dir_all(root.join(hidden).join("2026-11-02-inside")).unwrap();
         }
         std::fs::create_dir_all(root.join("2026-11-02-room")).unwrap();
-        std::fs::create_dir_all(root.join("acme").join("2026-11-01-report")).unwrap();
+        std::fs::create_dir_all(root.join("example").join("2026-11-01-report")).unwrap();
         let labels: Vec<_> = scan(root, None).unwrap().iter().map(|r| r.label()).collect();
-        assert_eq!(labels, vec!["2026-11-02-room", "acme/2026-11-01-report"]);
+        assert_eq!(labels, vec!["2026-11-02-room", "example/2026-11-01-report"]);
     }
 
     #[test]
@@ -490,10 +490,10 @@ mod tests {
         assert!(created);
         assert!(s.root.join("_workroom").join(AGENTS).is_file());
 
-        let project_rules = s.root.join("acme").join("_workroom");
+        let project_rules = s.root.join("example").join("_workroom");
         std::fs::create_dir_all(&project_rules).unwrap();
         std::fs::write(project_rules.join(AGENTS), "# 案件のルール\n").unwrap();
-        let (b, _) = create(&s, &NewRoom { slug: "b", description: "", project: Some("acme"), date }).unwrap();
+        let (b, _) = create(&s, &NewRoom { slug: "b", description: "", project: Some("example"), date }).unwrap();
 
         let rules_a = std::fs::read_to_string(a.join(AGENTS)).unwrap();
         let rules_b = std::fs::read_to_string(b.join(AGENTS)).unwrap();
@@ -505,7 +505,7 @@ mod tests {
 
         let rooms = scan(&s.root, None).unwrap();
         let labels: Vec<_> = rooms.iter().map(|r| r.label()).collect();
-        assert_eq!(labels, vec!["acme/2026-11-02-b", "2026-11-02-a"]);
+        assert_eq!(labels, vec!["example/2026-11-02-b", "2026-11-02-a"]);
         assert_eq!(rooms[1].description, "説明");
         assert_eq!(rooms[0].description, "");
 

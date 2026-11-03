@@ -103,18 +103,18 @@ fn new_creates_room_and_writes_cwd_file() {
 #[test]
 fn new_in_project_appends_project_rules() {
     let env = Env::new();
-    let tpl = env.root.join("acme").join("_workroom");
+    let tpl = env.root.join("example").join("_workroom");
     fs::create_dir_all(&tpl).unwrap();
     fs::write(tpl.join("AGENTS.md"), "# 案件のルール\n").unwrap();
-    let (out, lines) = env.run_cwd(&["new", "report", "-p", "acme", "--date", "2026-11-01", "-x"]);
+    let (out, lines) = env.run_cwd(&["new", "report", "-p", "example", "--date", "2026-11-01", "-x"]);
     assert!(out.status.success(), "{}", stderr(&out));
-    let room = env.root.join("acme").join("2026-11-01-report");
+    let room = env.root.join("example").join("2026-11-01-report");
     assert_eq!(lines, vec![room.display().to_string(), "codex".to_string()]);
     let agents = fs::read_to_string(room.join("AGENTS.md")).unwrap();
     assert!(agents.contains("# 作業ディレクトリのルール") && agents.ends_with("# 案件のルール\n"));
 
     let names = env.run(&["names"]);
-    assert_eq!(stdout(&names), "acme/2026-11-01-report\n");
+    assert_eq!(stdout(&names), "example/2026-11-01-report\n");
 }
 
 #[test]
@@ -222,9 +222,9 @@ fn new_without_name_requires_project_or_terminal_and_does_not_create_files() {
     let env = Env::new();
     for args in [
         &["new"][..],
-        &["new", "-p", "acme"],
-        &["new", "-p", "acme", "--date", "2026-11-03", "-c"],
-        &["new", "-p", "acme", "-x"],
+        &["new", "-p", "example"],
+        &["new", "-p", "example", "--date", "2026-11-03", "-c"],
+        &["new", "-p", "example", "-x"],
     ] {
         let (out, lines) = env.run_cwd(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
@@ -259,14 +259,14 @@ fn new_accepts_japanese_underscores_case_and_normalized_spaces() {
 #[test]
 fn new_project_slash_and_uppercase_configuration() {
     let env = Env::new();
-    let (out, lines) = env.run_cwd(&["new", "ACME/調査", "--date", "2026-11-03"]);
+    let (out, lines) = env.run_cwd(&["new", "EXAMPLE/調査", "--date", "2026-11-03"]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(lines, [env.root.join("ACME").join("2026-11-03-調査").display().to_string()]);
+    assert_eq!(lines, [env.root.join("EXAMPLE").join("2026-11-03-調査").display().to_string()]);
     env.write_config("project_uppercase = true\n");
     for (args, project, name) in [
-        (vec!["new", "x", "-p", "acme"], "ACME", "x"),
-        (vec!["new", "acme営業/Fix_Bug"], "ACME営業", "Fix_Bug"),
-        (vec!["new", "y", "-p", " acme　営業 "], "ACME-営業", "y"),
+        (vec!["new", "x", "-p", "example"], "EXAMPLE", "x"),
+        (vec!["new", "example営業/Fix_Bug"], "EXAMPLE営業", "Fix_Bug"),
+        (vec!["new", "y", "-p", " example　営業 "], "EXAMPLE-営業", "y"),
     ] {
         let mut args = args;
         args.extend(["--date", "2026-11-03"]);
@@ -454,10 +454,10 @@ fn rules_sync_updates_only_replaceable_rooms_and_can_preview() {
     let edited_text = format!("{}- 手で追記\n", fs::read_to_string(&edited).unwrap());
     fs::write(&edited, &edited_text).unwrap();
 
-    let project_template = env.root.join("acme").join("_workroom").join("AGENTS.md");
+    let project_template = env.root.join("example").join("_workroom").join("AGENTS.md");
     fs::create_dir_all(project_template.parent().unwrap()).unwrap();
     fs::write(&project_template, "# 案件の旧ルール\n").unwrap();
-    let out = env.run(&["new", "report", "-p", "acme", "--date", "2026-11-01"]);
+    let out = env.run(&["new", "report", "-p", "example", "--date", "2026-11-01"]);
     assert!(out.status.success(), "{}", stderr(&out));
     for slug in ["legacy", "missing", "manual"] {
         fs::create_dir(env.root.join(format!("2026-11-02-{slug}"))).unwrap();
@@ -473,7 +473,7 @@ fn rules_sync_updates_only_replaceable_rooms_and_can_preview() {
     let out = env.run(&["new", "unchanged", "--date", "2026-11-02"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let unchanged = env.root.join("2026-11-02-unchanged").join("AGENTS.md");
-    let report = env.root.join("acme").join("2026-11-01-report").join("AGENTS.md");
+    let report = env.root.join("example").join("2026-11-01-report").join("AGENTS.md");
     let before: Vec<_> = [
         generated.join("AGENTS.md"),
         generated.join(".done"),
@@ -501,7 +501,7 @@ fn rules_sync_updates_only_replaceable_rooms_and_can_preview() {
         summary.contains("更新する予定 3件 / 作成する予定 1件 / 変更なし 1件 / 手の変更のため対象外 2件"),
         "{summary}"
     );
-    for label in ["2026-11-02-generated", "2026-11-02-legacy", "acme/2026-11-01-report"] {
+    for label in ["2026-11-02-generated", "2026-11-02-legacy", "example/2026-11-01-report"] {
         assert!(summary.contains(&format!("更新する予定: {label}")), "{summary}");
     }
     assert!(summary.contains("作成する予定: 2026-11-02-missing"), "{summary}");
@@ -514,7 +514,7 @@ fn rules_sync_updates_only_replaceable_rooms_and_can_preview() {
     assert!(out.stdout.is_empty() && cwd.is_empty());
     let summary = stderr(&out);
     assert!(summary.contains("更新 3件 / 作成 1件 / 変更なし 1件 / 手の変更のため対象外 2件"), "{summary}");
-    for label in ["2026-11-02-generated", "2026-11-02-legacy", "acme/2026-11-01-report"] {
+    for label in ["2026-11-02-generated", "2026-11-02-legacy", "example/2026-11-01-report"] {
         assert!(summary.contains(&format!("更新: {label}")), "{summary}");
     }
     assert!(summary.contains("作成: 2026-11-02-missing"), "{summary}");
@@ -632,7 +632,7 @@ fn check_grep(use_builtin: bool) {
     fs::write(room.join("node_modules").join("excluded.js"), "needle excluded_only\n").unwrap();
     fs::write(room.join("test-cache").join("cached.md"), "needle excluded_only\n").unwrap();
     fs::write(room.join("AGENTS.md"), "needle rules_only\n").unwrap();
-    let project_room = env.root.join("acme").join("2026-11-01-report");
+    let project_room = env.root.join("example").join("2026-11-01-report");
     fs::create_dir_all(&project_room).unwrap();
     fs::write(project_room.join("report.md"), "needle 案件の行\n").unwrap();
     let run = |pattern: &str| {
@@ -857,9 +857,9 @@ fn import_normalizes_explicit_names_and_project_uppercase() {
     env.write_config("project_uppercase = true\n");
     let source = import_source(&env);
     let (out, lines) =
-        env.run_cwd(&["import", source.to_str().unwrap(), " Fix Bug ", "-p", "acme営業", "--date", "2026-11-03"]);
+        env.run_cwd(&["import", source.to_str().unwrap(), " Fix Bug ", "-p", "example営業", "--date", "2026-11-03"]);
     assert!(out.status.success(), "{}", stderr(&out));
-    let dest = env.root.join("ACME営業").join("2026-11-03-Fix-Bug");
+    let dest = env.root.join("EXAMPLE営業").join("2026-11-03-Fix-Bug");
     assert_eq!(lines, [dest.display().to_string()]);
     assert!(dest.join("note.txt").is_file());
 }
