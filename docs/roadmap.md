@@ -88,6 +88,7 @@
   - Rust 1.88 で `cargo check --all-targets --locked` が通ることを確認した（CI の `msrv` ジョブでも確認する）
 - [x] GitHub Actions（CI）：push / PR で Windows と Linux の `cargo fmt --check`・`cargo clippy --all-targets -- -D warnings`・`cargo test`。Linux で落ちるテストがあれば直す（WSL に Rust があれば手元で確認）。`GITHUB_TOKEN` の権限は最小（`contents: read`）
   - Linux（WSL、Rust 1.99）で fmt・clippy・テストが通った。修正は不要だった
+  - CI の Windows では TEMP が 8.3 形式の短いパス（`RUNNER~1`）で、import のテストが3件落ちた。「移行元の中にいるか」の判定で、カレントディレクトリを正規化していなかった（移行元は正規化していた）ので直した。テストは一時ディレクトリを正規化して使う。手元でも短い TEMP で再現し、修正後に通ることを確認した
   - アクションはコミット SHA で固定し、`actions/checkout` は `persist-credentials: false`。`.github/dependabot.yml`（cargo と github-actions）と `SECURITY.md` も用意した
 - [x] Releases：`v*` のタグの push で、Windows x64（msvc）と Linux x64（musl、静的リンク）をビルドして GitHub Releases に置く。最初は `v0.1.0`
   - タグと Cargo.toml の version が一致しなければ失敗する。各アーカイブに `.sha256` を付ける。リリースのジョブだけ `contents: write`。GitHub 上での実行は未確認

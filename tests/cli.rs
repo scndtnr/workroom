@@ -16,7 +16,9 @@ struct Env {
 impl Env {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().to_path_buf();
+        // TEMP が 8.3 形式の短いパスの環境（GitHub Actions の Windows など）でも、
+        // 移行元（正規化される）と作業ルートのパスの形をそろえるため、正規化して使う
+        let base = canonical_import_path(dir.path());
         // 日本語を含むパスでも動くことを確かめる
         let root = base.join("作業 ルート");
         Self { _dir: dir, base, root }
