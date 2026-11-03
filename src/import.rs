@@ -26,7 +26,9 @@ pub fn run(settings: &Settings, args: &ImportArgs) -> Result<PathBuf> {
     if !src.is_dir() {
         bail!("ディレクトリではありません: {}", src.display());
     }
-    let cwd = strip_verbatim(std::env::current_dir()?);
+    // 移行元と同じく正規化して比べる（8.3 形式の短いパスなどで判定をすり抜けないように）
+    let cwd = std::env::current_dir()?;
+    let cwd = strip_verbatim(std::fs::canonicalize(&cwd).unwrap_or(cwd));
     if cwd.starts_with(&src) {
         bail!("移行元の中にいるため移動できません。別のディレクトリに移動してから実行してください");
     }

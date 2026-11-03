@@ -123,7 +123,7 @@ enum RulesCmd {
 
 #[derive(Args)]
 struct NewArgs {
-    /// 部屋の名前、または案件/名前（例: fix_bug、ACME/調査。省略時は -p が必要）
+    /// 部屋の名前、または案件/名前（例: fix_bug、EXAMPLE/調査。省略時は -p が必要）
     #[arg(value_name = "名前")]
     slug: Option<String>,
     /// README.md の1行目に書く説明（日本語可）
@@ -424,9 +424,9 @@ mod tests {
         let date = room::parse_date("2000-01-02").unwrap();
         for command in ["claude", "codex"] {
             let slug = format!("調査-{command}");
-            let outcome = tui::Outcome::Create { project: Some("ACME".into()), slug: slug.clone() };
+            let outcome = tui::Outcome::Create { project: Some("EXAMPLE".into()), slug: slug.clone() };
             finish_pick(&settings, Some(&file), outcome, Some(date), Some(command)).unwrap();
-            let path = settings.root.join("ACME").join(format!("2000-01-02-{slug}"));
+            let path = settings.root.join("EXAMPLE").join(format!("2000-01-02-{slug}"));
             assert!(path.join("README.md").is_file());
             let expected = format!("{}\n{command}\n", path.display());
             assert_eq!(std::fs::read_to_string(&file).unwrap(), expected);

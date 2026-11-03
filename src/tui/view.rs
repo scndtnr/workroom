@@ -199,7 +199,7 @@ mod tests {
         State::new(
             vec![
                 item("2026-11-02-fix-bug", None, "不具合調査", false, Some(100)),
-                item("2026-11-01-report", Some("acme"), "月次レポート", false, Some(50)),
+                item("2026-11-01-report", Some("example"), "月次レポート", false, Some(50)),
                 item("2026-10-01-old", None, "", true, None),
             ],
             "",
@@ -223,7 +223,7 @@ mod tests {
                 "┌ wk  ~/work ──────────────────────────────────┐┌ プレビュー ──────────────────┐",
                 "│>            2/3  最近使った順  完了 1件非表示││# 不具合調査                  │",
                 "│> 26-11-02 fix-bug  不具合調査                ││                              │",
-                "│  26-11-01 acme/report  月次レポート          ││- created: 2026-11-02 19:33   │",
+                "│  26-11-01 example/report  月次レポート       ││- created: 2026-11-02 19:33   │",
                 "│                                              ││                              │",
                 "│                                              ││ファイル構成を計算中…         │",
                 "└──────────────────────────────────────────────┘└──────────────────────────────┘",
@@ -270,16 +270,19 @@ mod tests {
     #[test]
     fn snapshot_project_title_empty_message_and_create_rows() {
         let ctx = ViewContext { root: "~/work", icons: false, preview: None };
-        let mut state = State::new(Vec::new(), "", Some("ACME"), true);
+        let mut state = State::new(Vec::new(), "", Some("EXAMPLE"), true);
         state.apply(Action::TogglePreview);
         let lines = draw(&state, &ctx, 100, 6);
-        assert!(lines[0].starts_with("┌ wk  ~/work  案件: ACME ─"), "{lines:#?}");
-        assert!(lines[2].contains("案件 ACME に部屋がありません。検索語を入力して Enter で作成します"), "{lines:#?}");
+        assert!(lines[0].starts_with("┌ wk  ~/work  案件: EXAMPLE ─"), "{lines:#?}");
+        assert!(
+            lines[2].contains("案件 EXAMPLE に部屋がありません。検索語を入力して Enter で作成します"),
+            "{lines:#?}"
+        );
         for c in "調査".chars() {
             state.apply(Action::Input(c));
         }
         let lines = draw(&state, &ctx, 100, 6);
-        assert!(lines[2].contains("+ 新規作成: ACME/調査"), "{lines:#?}");
+        assert!(lines[2].contains("+ 新規作成: EXAMPLE/調査"), "{lines:#?}");
         state.apply(Action::Clear);
         for c in "other/x".chars() {
             state.apply(Action::Input(c));

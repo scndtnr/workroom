@@ -72,7 +72,7 @@
 ## 追加：案件の指定方法と、日本語を含む名前（済）
 実装は Codex、レビューとコミットは Claude Code。
 - [x] `wk new -p 案件`（名前なし）で、案件に絞った TUI を開く。`--date` / `-c` / `-x` は作成・移動に引き継ぐ
-- [x] 部屋の名前・案件名に日本語・`_`・大文字を使える。`/` は案件と部屋の区切り（`wk new ACME/調査`、TUI の検索語）
+- [x] 部屋の名前・案件名に日本語・`_`・大文字を使える。`/` は案件と部屋の区切り（`wk new EXAMPLE/調査`、TUI の検索語）
 - [x] 設定 `project_uppercase`（既定 false）で、案件名の ASCII 英小文字を大文字にそろえる
 - [x] Claude Code の履歴の名前の衝突を、作成・import の前に検出する（残っている履歴だけがある場合は警告）
 - [x] 名前の検査を、作業ルート・テンプレートを作る前に行う
@@ -88,16 +88,22 @@
   - Rust 1.88 で `cargo check --all-targets --locked` が通ることを確認した（CI の `msrv` ジョブでも確認する）
 - [x] GitHub Actions（CI）：push / PR で Windows と Linux の `cargo fmt --check`・`cargo clippy --all-targets -- -D warnings`・`cargo test`。Linux で落ちるテストがあれば直す（WSL に Rust があれば手元で確認）。`GITHUB_TOKEN` の権限は最小（`contents: read`）
   - Linux（WSL、Rust 1.99）で fmt・clippy・テストが通った。修正は不要だった
+  - CI の Windows では TEMP が 8.3 形式の短いパス（`RUNNER~1`）で、import のテストが3件落ちた。「移行元の中にいるか」の判定で、カレントディレクトリを正規化していなかった（移行元は正規化していた）ので直した。テストは一時ディレクトリを正規化して使う。手元でも短い TEMP で再現し、修正後に通ることを確認した
   - アクションはコミット SHA で固定し、`actions/checkout` は `persist-credentials: false`。`.github/dependabot.yml`（cargo と github-actions）と `SECURITY.md` も用意した
 - [x] Releases：`v*` のタグの push で、Windows x64（msvc）と Linux x64（musl、静的リンク）をビルドして GitHub Releases に置く。最初は `v0.1.0`
   - タグと Cargo.toml の version が一致しなければ失敗する。各アーカイブに `.sha256` を付ける。リリースのジョブだけ `contents: write`。GitHub 上での実行は未確認
 - [x] 公開前の確認：コミットの作者が noreply だけか（`git log --format='%an <%ae>'`）、全ファイルと全コミットにユーザー名・個人のフォルダ名・メールアドレスが含まれないか（`git log -p` も対象）
-- [ ] GitHub リポジトリ `scndtnr/workroom` を **private** で作成して push（ユーザーの確認を取ってから）。リリース（`v0.1.0`）まで行う
+- [x] GitHub リポジトリ `scndtnr/workroom` を **private** で作成して push（ユーザーの確認を取ってから）。リリース（`v0.1.0`）まで行う
+  - 2026-11-03：ブランチ名を `master` から `main` に変えて push した。CI が通り、`v0.1.0` のリリース（Windows の zip と Linux の tar.gz、`.sha256`）ができた。ダウンロードしてチェックサムと `--version` を確認した。Linux 版は static-pie
 - [ ] 保護設定（public にする前に。private の無料プランでは使えないものは public 化と同時に）
-  - main のルールセット：force push と削除の禁止、CI の通過を必須に（1人で開発するので、PR のレビュー必須にはしない。ユーザーと確認）
-  - Secret scanning と push protection、Dependabot alerts / security updates、`.github/dependabot.yml`（cargo と github-actions）
-  - Private vulnerability reporting と `SECURITY.md`
-  - Actions：既定のワークフロー権限を読み取りのみに、外部からの PR のワークフローは承認制に
+  - 済（2026-11-03、private で設定）：Dependabot alerts と security updates、`.github/dependabot.yml`（cargo と github-actions）、`SECURITY.md`、ワークフローの既定権限を読み取りのみに
+  - 残り（private の無料プランでは API が通らないので、public 化と同時に行う）：
+    - main のルールセット（403）：force push と削除の禁止、PR を通したマージと CI の通過を必須に（レビューの承認は不要。2026-11-03 にユーザーと決定）
+      - 必須にするチェック名：`検証 (windows-latest)`・`検証 (ubuntu-latest)`・`Rust 1.88 で検証`。ジョブ名を変えると、必須のチェックが待機中のまま止まるので、ルールセットも直す
+      - 有効にした後は、main に直接 push できない（ブランチ → PR → CI → マージ）
+    - Secret scanning と push protection（422）
+    - Private vulnerability reporting（404）
+    - 外部からの PR のワークフローを承認制に
 - [ ] public 化はユーザーの確認を取ってから
 
 ## 未決事項

@@ -13,6 +13,7 @@ use crate::config::{self, Settings};
 use crate::room::{self, AGENTS};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// テンプレートを置くディレクトリ（`_` で始まるので、部屋・案件とはみなされない）
@@ -65,7 +66,11 @@ pub fn compose(global: &str, project: Option<&str>) -> String {
 }
 
 fn sha256_hex(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
+    // sha2 0.11 からダイジェストの型が `{:x}` に対応しないので、1バイトずつ16進にする
+    Sha256::digest(text.as_bytes()).iter().fold(String::with_capacity(64), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }
 
 /// 本文の先頭に識別子を付ける
@@ -248,6 +253,13 @@ pub fn warn_root_agents(settings: &Settings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 既存の部屋の識別子と照合するので、ハッシュの文字列（小文字の16進64桁）を変えない
+    #[test]
+    fn sha256_hex_is_stable() {
+        assert_eq!(sha256_hex(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(sha256_hex("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
 
     #[test]
     fn header_roundtrip() {
