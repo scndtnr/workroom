@@ -51,7 +51,7 @@
 - Herdr（PowerShell）での対話操作をユーザーが確認した（2026-11-02）：日本語 IME での入力、Enter での移動、`Esc` / `Ctrl+C` での終了と画面の復元、新規作成、`Ctrl+D` / `Tab` / `Ctrl+S` / `Ctrl+O` / `Alt+P`、サイズ変更、アイコン。nushell からの対話操作は未確認
 
 ## M3 プレビュー・サイズ・アイコン（済）
-実装は Codex（`claude-codex-handoff`）、レビューとコミットは Claude Code。
+実装は Codex（`agent-handoff`）、レビューとコミットは Claude Code。
 - [x] プレビューを別スレッドで作り、キャッシュする（README → tree → サイズの順に届いたものから表示。`tui/preview.rs`）
   - 新しい要求を優先し、古い要求は読み飛ばす。サイズの計算中に選択が変わったら打ち切る（世代番号で判定。打ち切った結果はキャッシュしない）。途中までの部屋は、選び直せば再要求する
   - サイズは設定の `exclude` を除いて数える（`fsinfo::disk_usage`）
@@ -81,7 +81,7 @@
 - 対話操作（案件に絞った TUI、`案件/名前` での新規作成）は未確認
 
 ## M5 公開準備
-進め方：Codex が 3〜5 と README・LICENSE の下書き、Claude Code が README の推敲・レビュー・公開前の確認・コミット（`claude-codex-handoff`）。
+進め方：Codex が 3〜5 と README・LICENSE の下書き、Claude Code が README の推敲・レビュー・公開前の確認・コミット（`agent-handoff`）。
 - [x] README.md（日本語）：概要、インストール（`cargo install --git` / Releases）、シェルごとの設定（PowerShell / bash・zsh / nushell）、コマンドと TUI のキー操作、名前の規則（日本語可・`/` は案件の区切り・Claude の履歴の名前の衝突の検出）、設定と環境変数、`_workroom/AGENTS.md` と `rules sync`、注意事項（Windows で Codex を使うなら作業ルートは NTFS 上、import は Claude Code の非公式な内部形式に依存）
 - [x] LICENSE（MIT。著作権者は `scndtnr`。2026-11-03 にユーザーと決定）
 - [x] Cargo.toml：`rust-version = "1.88"`（ratatui 0.30 と let チェーンのため）、keywords などのメタデータ
