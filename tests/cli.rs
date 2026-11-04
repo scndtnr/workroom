@@ -459,11 +459,12 @@ fn rules_sync_updates_only_replaceable_rooms_and_can_preview() {
     fs::write(&project_template, "# 案件の旧ルール\n").unwrap();
     let out = env.run(&["new", "report", "-p", "example", "--date", "2026-11-01"]);
     assert!(out.status.success(), "{}", stderr(&out));
-    for slug in ["legacy", "missing", "manual"] {
+    for slug in ["foreign", "missing", "manual"] {
         fs::create_dir(env.root.join(format!("2026-11-02-{slug}"))).unwrap();
     }
-    let legacy = env.root.join("2026-11-02-legacy").join("AGENTS.md");
-    fs::write(&legacy, "\u{feff}<!-- wk: コピー -->\r\n# 古いルール\r\n").unwrap();
+    let foreign = env.root.join("2026-11-02-foreign").join("AGENTS.md");
+    // ほかのツールが作ったコメント付きの AGENTS.md は、手で書かれたものとして残す
+    fs::write(&foreign, "\u{feff}<!-- wk: コピー -->\r\n# 古いルール\r\n").unwrap();
     let manual = env.root.join("2026-11-02-manual").join("AGENTS.md");
     fs::write(&manual, "# 手で作成したルール\n").unwrap();
     let missing = env.root.join("2026-11-02-missing").join("AGENTS.md");
@@ -478,7 +479,7 @@ fn rules_sync_updates_only_replaceable_rooms_and_can_preview() {
         generated.join("AGENTS.md"),
         generated.join(".done"),
         edited.clone(),
-        legacy.clone(),
+        foreign.clone(),
         manual.clone(),
         missing.clone(),
         unchanged.clone(),
@@ -498,10 +499,10 @@ fn rules_sync_updates_only_replaceable_rooms_and_can_preview() {
     assert!(out.stdout.is_empty() && cwd.is_empty());
     let summary = stderr(&out);
     assert!(
-        summary.contains("更新する予定 3件 / 作成する予定 1件 / 変更なし 1件 / 手の変更のため対象外 2件"),
+        summary.contains("更新する予定 2件 / 作成する予定 1件 / 変更なし 1件 / 手の変更のため対象外 3件"),
         "{summary}"
     );
-    for label in ["2026-11-02-generated", "2026-11-02-legacy", "example/2026-11-01-report"] {
+    for label in ["2026-11-02-generated", "example/2026-11-01-report"] {
         assert!(summary.contains(&format!("更新する予定: {label}")), "{summary}");
     }
     assert!(summary.contains("作成する予定: 2026-11-02-missing"), "{summary}");
@@ -513,16 +514,16 @@ fn rules_sync_updates_only_replaceable_rooms_and_can_preview() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(out.stdout.is_empty() && cwd.is_empty());
     let summary = stderr(&out);
-    assert!(summary.contains("更新 3件 / 作成 1件 / 変更なし 1件 / 手の変更のため対象外 2件"), "{summary}");
-    for label in ["2026-11-02-generated", "2026-11-02-legacy", "example/2026-11-01-report"] {
+    assert!(summary.contains("更新 2件 / 作成 1件 / 変更なし 1件 / 手の変更のため対象外 3件"), "{summary}");
+    for label in ["2026-11-02-generated", "example/2026-11-01-report"] {
         assert!(summary.contains(&format!("更新: {label}")), "{summary}");
     }
     assert!(summary.contains("作成: 2026-11-02-missing"), "{summary}");
-    for label in ["2026-11-02-manual", "2026-11-02-edited"] {
+    for label in ["2026-11-02-manual", "2026-11-02-edited", "2026-11-02-foreign"] {
         assert!(summary.contains(&format!("手の変更のため対象外: {label}")), "{summary}");
     }
     let expected = fs::read(&unchanged).unwrap();
-    for path in [generated.join("AGENTS.md"), legacy, missing] {
+    for path in [generated.join("AGENTS.md"), missing] {
         assert_eq!(fs::read(path).unwrap(), expected);
     }
     let project_rules = fs::read_to_string(report).unwrap();
@@ -531,13 +532,14 @@ fn rules_sync_updates_only_replaceable_rooms_and_can_preview() {
     assert!(!project_rules.contains('\r') && !project_rules.contains('\u{feff}'));
     assert_eq!(fs::read_to_string(edited).unwrap(), edited_text);
     assert_eq!(fs::read_to_string(manual).unwrap(), "# 手で作成したルール\n");
+    assert_eq!(fs::read_to_string(foreign).unwrap(), "\u{feff}<!-- wk: コピー -->\r\n# 古いルール\r\n");
     assert_eq!(fs::read_to_string(generated.join(".done")).unwrap(), "完了\n");
     assert_eq!(fs::read_to_string(template).unwrap(), "\u{feff}# 全体の新ルール\r\n\r\n");
     assert_eq!(fs::read_to_string(project_template).unwrap(), "\u{feff}# 案件の新ルール\r\n");
 
     let out = env.run(&["rules", "sync"]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(stderr(&out).contains("更新 0件 / 作成 0件 / 変更なし 5件 / 手の変更のため対象外 2件"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("更新 0件 / 作成 0件 / 変更なし 4件 / 手の変更のため対象外 3件"), "{}", stderr(&out));
 }
 
 #[test]
@@ -547,7 +549,7 @@ fn rules_sync_requires_template_and_guides_legacy_root_migration() {
     fs::create_dir_all(&room).unwrap();
     fs::write(env.root.join("AGENTS.md"), "# ルートのルール\n").unwrap();
     let agents = room.join("AGENTS.md");
-    let legacy = "<!-- wk: コピー -->\n# 古いルール\n";
+    let legacy = "# 部屋のルール\n";
     fs::write(&agents, legacy).unwrap();
     for args in [&["rules", "sync", "--dry-run"][..], &["rules", "sync"]] {
         let (out, cwd) = env.run_cwd(args);
