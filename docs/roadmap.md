@@ -80,7 +80,7 @@
 - 規則の変更に合わせて、既存のテストの期待値を直した（`Bad_Slug` や日本語の名前は作れるようになった、など）
 - 対話操作（案件に絞った TUI、`案件/名前` での新規作成）は未確認
 
-## M5 公開準備
+## M5 公開準備（済）
 進め方：Codex が 3〜5 と README・LICENSE の下書き、Claude Code が README の推敲・レビュー・公開前の確認・コミット（`agent-handoff`）。
 - [x] README.md（日本語）：概要、インストール（`cargo install --git` / Releases）、シェルごとの設定（PowerShell / bash・zsh / nushell）、コマンドと TUI のキー操作、名前の規則（日本語可・`/` は案件の区切り・Claude の履歴の名前の衝突の検出）、設定と環境変数、`_workroom/AGENTS.md` と `rules sync`、注意事項（Windows で Codex を使うなら作業ルートは NTFS 上、import は Claude Code の非公式な内部形式に依存）
 - [x] LICENSE（MIT。著作権者は `scndtnr`。2026-11-03 にユーザーと決定）
@@ -95,16 +95,17 @@
 - [x] 公開前の確認：コミットの作者が noreply だけか（`git log --format='%an <%ae>'`）、全ファイルと全コミットにユーザー名・個人のフォルダ名・メールアドレスが含まれないか（`git log -p` も対象）
 - [x] GitHub リポジトリ `scndtnr/workroom` を **private** で作成して push（ユーザーの確認を取ってから）。リリース（`v0.1.0`）まで行う
   - 2026-11-03：ブランチ名を `master` から `main` に変えて push した。CI が通り、`v0.1.0` のリリース（Windows の zip と Linux の tar.gz、`.sha256`）ができた。ダウンロードしてチェックサムと `--version` を確認した。Linux 版は static-pie
-- [ ] 保護設定（public にする前に。private の無料プランでは使えないものは public 化と同時に）
+- [x] 保護設定（public にする前に。private の無料プランでは使えないものは public 化と同時に）
   - 済（2026-11-03、private で設定）：Dependabot alerts と security updates、`.github/dependabot.yml`（cargo と github-actions）、`SECURITY.md`、ワークフローの既定権限を読み取りのみに
-  - 残り（private の無料プランでは API が通らないので、public 化と同時に行う）：
-    - main のルールセット（403）：force push と削除の禁止、PR を通したマージと CI の通過を必須に（レビューの承認は不要。2026-11-03 にユーザーと決定）
+  - 2026-11-04、public 化と同時に設定（private の無料プランでは API が通らなかったもの）：
+    - main のルールセット「main の保護」：force push と削除の禁止、PR を通したマージと CI の通過を必須に（レビューの承認は不要、バイパスなし、ブランチの最新化は必須にしない。2026-11-03 にユーザーと決定）
       - 必須にするチェック名：`検証 (windows-latest)`・`検証 (ubuntu-latest)`・`Rust 1.88 で検証`。ジョブ名を変えると、必須のチェックが待機中のまま止まるので、ルールセットも直す
       - 有効にした後は、main に直接 push できない（ブランチ → PR → CI → マージ）
-    - Secret scanning と push protection（422）
-    - Private vulnerability reporting（404）
-    - 外部からの PR のワークフローを承認制に
-- [ ] public 化はユーザーの確認を取ってから
+    - Secret scanning と push protection
+    - Private vulnerability reporting
+    - 外部からの PR のワークフローを承認制に（すべての外部の貢献者）
+- [x] public 化はユーザーの確認を取ってから
+  - 2026-11-04 に public にした。直前に、全ブランチ・タグ・履歴の作者と、個人のパス・メールアドレスが含まれないことを確認した
 
 ## 未決事項
 - `wk grep` を TUI に統合するか（検索結果から部屋へ移動するなど）
