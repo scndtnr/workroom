@@ -91,16 +91,6 @@ pub fn is_unmodified(text: &str) -> bool {
     parse_header(text).is_some_and(|(hash, body)| hash.eq_ignore_ascii_case(&sha256_hex(body)))
 }
 
-/// 以前の PowerShell 版（`wk sync-rules`）が生成したコピーの目印
-const LEGACY_PS1_PREFIX: &str = "<!-- wk:";
-
-/// `rules sync` で最新のテンプレートに置き換えてよいか。
-/// workroom が生成して手で変更されていないもの、または PowerShell 版が生成したもの（ハッシュがないので、
-/// 生成されたものとみなす）
-pub fn is_replaceable(text: &str) -> bool {
-    is_unmodified(text) || text.trim_start_matches('\u{feff}').starts_with(LEGACY_PS1_PREFIX)
-}
-
 /// 部屋に置く AGENTS.md の内容（識別子付き）
 pub fn render(settings: &Settings, project: Option<&str>) -> Result<String> {
     let path = ensure_template(settings)?;
@@ -142,7 +132,7 @@ fn sync_action(current: Option<&str>, desired: &str) -> SyncAction {
     match current {
         None => SyncAction::Create,
         Some(text) if text == desired => SyncAction::Unchanged,
-        Some(text) if is_replaceable(text) => SyncAction::Update,
+        Some(text) if is_unmodified(text) => SyncAction::Update,
         Some(_) => SyncAction::Skip,
     }
 }
@@ -275,17 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn replaceable_rules() {
-        let generated = with_header(&compose("# ルール\n", None));
-        assert!(is_replaceable(&generated));
-        assert!(!is_replaceable(&format!("{generated}- 手で追記\n")));
-        // PowerShell 版のコピーは、手で変更されていても生成されたものとみなす
-        assert!(is_replaceable("<!-- wk: ルート（../AGENTS.md）のコピー。 -->\n\n# ルール\n- 追記\n"));
-        assert!(is_replaceable("\u{feff}<!-- wk: x -->\n"));
-        assert!(!is_replaceable("# 手で書いた AGENTS.md\n<!-- wk: 途中 -->\n"));
-    }
-
-    #[test]
     fn project_rules_are_appended() {
         assert_eq!(compose("\u{feff}# 全体\n", Some("# 案件\n")), "# 全体\n\n# 案件\n");
         assert_eq!(compose("# 全体", Some("  \n")), "# 全体\n");
@@ -304,7 +283,8 @@ mod tests {
         assert_eq!(sync_action(None, &desired), SyncAction::Create);
         assert_eq!(sync_action(Some(&desired), &desired), SyncAction::Unchanged);
         assert_eq!(sync_action(Some(&old), &desired), SyncAction::Update);
-        assert_eq!(sync_action(Some("\u{feff}<!-- wk: コピー -->\n# 古いルール\n"), &desired), SyncAction::Update);
+        // workroom の識別子がないものは、コメントで始まっていても手で書かれたものとみなす
+        assert_eq!(sync_action(Some("\u{feff}<!-- wk: コピー -->\n# 古いルール\n"), &desired), SyncAction::Skip);
         assert_eq!(sync_action(Some(&format!("{old}- 手で追記\n")), &desired), SyncAction::Skip);
         assert_eq!(sync_action(Some("# 手で作成\n"), &desired), SyncAction::Skip);
         assert_eq!(sync_action(Some(""), &desired), SyncAction::Skip);
