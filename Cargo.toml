@@ -1,6 +1,6 @@
 [package]
 name = "workroom"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "AI エージェント（Claude Code / Codex など）に日付付きの作業部屋を用意する CLI"
