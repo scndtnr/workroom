@@ -16,7 +16,7 @@
 - マイルストーンごとに、次の確認を通してからコミットする（CI と同じ）。
   - `cargo fmt --check`
   - `cargo clippy --all-targets --locked -- -D warnings`
-  - `cargo test`
+  - `cargo test --locked`
 
 ## Claude Code と Codex の役割分担
 - 両方を使うときは、作業者のグローバルスキル `agent-handoff`（引き継ぎ書・呼び出し方）があればそれに従う。
