@@ -13,7 +13,10 @@
 - ファイルは UTF-8（BOM なし）で書く。
 - Windows の crossterm では、`KeyEventKind::Press` 以外のキーイベントを無視する。
 - 描画と状態を分け、状態は単体テスト、描画は ratatui の `TestBackend` でテストする。対話操作で確認できていないことは、そうと明記して報告する。
-- マイルストーンごとに `cargo test` / `cargo clippy` / `cargo fmt --check` を通してからコミットする。
+- マイルストーンごとに、次の確認を通してからコミットする（CI と同じ）。
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets --locked -- -D warnings`
+  - `cargo test`
 
 ## Claude Code と Codex の役割分担
 - 両方を使うときは、作業者のグローバルスキル `agent-handoff`（引き継ぎ書・呼び出し方）があればそれに従う。
