@@ -77,15 +77,23 @@ pub fn validate_project(project: &str) -> Result<()> {
     if parse_room_name(project).is_some() {
         bail!("案件名に `YYYY-MM-DD-名前` の形は使えません（部屋の名前と区別できません）: {project}");
     }
-    let stem = project.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    if is_windows_reserved_name(project) {
+        bail!("案件名に Windows の予約名は使えません（拡張子付きも不可）: {project}");
+    }
+    Ok(())
+}
+
+/// Windows の予約名か（大小文字を区別せず、拡張子付きも含む）。
+pub fn is_windows_reserved_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
     if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || ["COM", "LPT"].iter().any(|prefix| {
             stem.strip_prefix(prefix).is_some_and(|n| n.len() == 1 && matches!(n.as_bytes()[0], b'1'..=b'9'))
         })
     {
-        bail!("案件名に Windows の予約名は使えません（拡張子付きも不可）: {project}");
+        return true;
     }
-    Ok(())
+    false
 }
 
 /// 空白を正規化し、設定に応じて ASCII 英小文字だけを大文字にする
@@ -148,6 +156,32 @@ pub fn parse_room_name(name: &str) -> Option<(NaiveDate, String)> {
 
 fn is_hidden(name: &str) -> bool {
     name.starts_with('.') || name.starts_with('_')
+}
+
+/// ラベルの要素（部屋名、または案件名と部屋名）から、README を読まずに部屋を特定する。
+/// URL のデコードと要素の検査、ファイルの canonicalize は呼び出し元で行う。
+pub fn locate(root: &Path, label: &[&str]) -> Option<PathBuf> {
+    match label {
+        [name] if parse_room_name(name).is_some() => {}
+        [project, name]
+            if !is_hidden(project) && parse_room_name(project).is_none() && parse_room_name(name).is_some() => {}
+        _ => return None,
+    }
+    let mut path = root.to_path_buf();
+    for part in label {
+        // 検査前の要素でも、絶対パスや親ディレクトリとして join しない。
+        if part.contains(['/', '\\'])
+            || Path::new(part).components().next() != Some(std::path::Component::Normal(std::ffi::OsStr::new(part)))
+        {
+            return None;
+        }
+        path.push(part);
+        // scan の read_dirs と同じく、シンボリックリンクは部屋・案件に数えない。
+        if !std::fs::symlink_metadata(&path).ok()?.is_dir() {
+            return None;
+        }
+    }
+    Some(path)
 }
 
 /// 作業ルート配下の部屋を新しい順に返す。`since` より古い日付のものは README を読む前に除外する
@@ -460,6 +494,114 @@ mod tests {
         ] {
             assert!(validate_project(name).is_err(), "{name}");
         }
+    }
+
+    #[test]
+    fn windows_reserved_names_include_extensions_and_ignore_case() {
+        for stem in ["CON", "PRN", "AUX", "NUL"]
+            .into_iter()
+            .map(str::to_string)
+            .chain((1..=9).flat_map(|n| [format!("COM{n}"), format!("LPT{n}")]))
+        {
+            for name in [stem.clone(), stem.to_lowercase(), format!("{}.txt.md", stem.to_lowercase())] {
+                assert!(is_windows_reserved_name(&name), "{name}");
+            }
+        }
+        for name in ["", "COM0", "COM10", "LPT0.txt", "LPT10", "console", "auxiliary", "a.NUL", "調査"] {
+            assert!(!is_windows_reserved_name(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn locate_matches_scan_without_requiring_readme_or_validated_project_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for label in [
+            "2026-11-02-fix-bug",
+            "EXAMPLE/2026-11-03-調査",
+            "手作り 案件/2026-11-01-report",
+            "-legacy/2026-11-01-report",
+            ".tmp.drivedownload/2026-11-02-hidden",
+            "_workroom/2026-11-02-hidden",
+            "EXAMPLE/_workroom/2026-11-02-deep",
+            "2026-11-02-fix-bug/2026-11-03-nested",
+            "EXAMPLE/2026-13-01-invalid",
+        ] {
+            std::fs::create_dir_all(root.join(label)).unwrap();
+        }
+        // README がファイルでなくても、部屋の特定では触らない。
+        std::fs::create_dir(root.join("2026-11-02-fix-bug").join(README)).unwrap();
+        let rooms = scan(root, None).unwrap();
+        assert_eq!(rooms.len(), 4);
+        for room in rooms {
+            let label = room.label();
+            let parts: Vec<_> = label.split('/').collect();
+            assert_eq!(locate(root, &parts), Some(room.path), "{label}");
+        }
+        for label in [
+            ".tmp.drivedownload/2026-11-02-hidden",
+            "_workroom/2026-11-02-hidden",
+            "EXAMPLE/_workroom/2026-11-02-deep",
+            "2026-11-02-fix-bug/2026-11-03-nested",
+            "EXAMPLE/2026-13-01-invalid",
+            "EXAMPLE/2026-11-03-missing",
+            "2026-11-04-missing",
+            "EXAMPLE",
+        ] {
+            assert_eq!(locate(root, &label.split('/').collect::<Vec<_>>()), None, "{label}");
+        }
+    }
+
+    #[test]
+    fn locate_rejects_files_and_non_component_labels() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(dir.path().join("2026-11-02-outside")).unwrap();
+        std::fs::write(root.join("2026-11-02-file"), "").unwrap();
+        std::fs::write(root.join("project-file"), "").unwrap();
+        for parts in [
+            vec![],
+            vec![""],
+            vec!["2026-11-02-file"],
+            vec!["project-file", "2026-11-02-room"],
+            vec!["..", "2026-11-02-outside"],
+            vec![".", "2026-11-02-room"],
+            vec!["", "2026-11-02-room"],
+            vec!["../root", "2026-11-02-room"],
+            vec![r"..\root", "2026-11-02-room"],
+            vec!["2026-11-02-room/child"],
+            vec![r"2026-11-02-room\child"],
+        ] {
+            assert_eq!(locate(&root, &parts), None, "{parts:?}");
+        }
+        assert_eq!(locate(&dir.path().join("missing"), &["2026-11-02-room"]), None);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn locate_ignores_symlinked_rooms_and_projects_like_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let target = dir.path().join("target");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir_all(target.join("2026-11-02-room")).unwrap();
+        #[cfg(unix)]
+        let symlink = |from: &Path, to: &Path| std::os::unix::fs::symlink(from, to);
+        #[cfg(windows)]
+        let symlink = |from: &Path, to: &Path| std::os::windows::fs::symlink_dir(from, to);
+        if let Err(error) = symlink(&target, &root.join("project-link")) {
+            #[cfg(windows)]
+            if error.kind() == std::io::ErrorKind::PermissionDenied || error.raw_os_error() == Some(1314) {
+                eprintln!("シンボリックリンクの作成権限がないためスキップ: {error}");
+                return;
+            }
+            panic!("シンボリックリンクを作れません: {error}");
+        }
+        symlink(&target.join("2026-11-02-room"), &root.join("2026-11-02-link")).unwrap();
+        assert!(scan(&root, None).unwrap().is_empty());
+        assert_eq!(locate(&root, &["project-link", "2026-11-02-room"]), None);
+        assert_eq!(locate(&root, &["2026-11-02-link"]), None);
     }
 
     #[test]

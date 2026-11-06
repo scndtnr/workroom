@@ -16,6 +16,14 @@ pub struct LsArgs<'a> {
     pub depth: usize,
 }
 
+#[derive(Debug, Default)]
+pub struct Filter<'a> {
+    pub query: Option<&'a str>,
+    pub all: bool,
+    pub old: bool,
+    pub days: Option<i64>,
+}
+
 struct Style {
     on: bool,
 }
@@ -38,27 +46,34 @@ impl Style {
     }
 }
 
-pub fn run(settings: &Settings, args: &LsArgs) -> Result<()> {
-    let style = Style { on: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() };
-    let days = args.days.unwrap_or(settings.config.recent_days);
+/// `ls` とハブで共有する絞り込み。並び順は `room::scan` の新しい順を保つ。
+pub fn select_rooms(settings: &Settings, filter: &Filter) -> Result<(Vec<Room>, String)> {
+    let days = filter.days.unwrap_or(settings.config.recent_days);
     let cutoff = room::today(settings) - TimeDelta::days(days);
-    let filtered = args.all || args.old || args.query.is_some();
+    let filtered = filter.all || filter.old || filter.query.is_some();
     let since = (!filtered).then_some(cutoff);
     let mut rooms = room::scan(&settings.root, since)?;
-    let label = if let Some(q) = args.query {
+    let label = if let Some(q) = filter.query {
         let q_lower = q.to_lowercase();
         rooms
             .retain(|r| r.label().to_lowercase().contains(&q_lower) || r.description.to_lowercase().contains(&q_lower));
         format!("「{q}」に一致")
-    } else if args.old {
+    } else if filter.old {
         rooms.retain(|r| !r.done && r.date < cutoff);
         format!("直近{days}日より前・未完了")
-    } else if args.all {
+    } else if filter.all {
         "全件".to_string()
     } else {
         rooms.retain(|r| !r.done);
         format!("直近{days}日・進行中")
     };
+    Ok((rooms, label))
+}
+
+pub fn run(settings: &Settings, args: &LsArgs) -> Result<()> {
+    let style = Style { on: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() };
+    let (mut rooms, label) =
+        select_rooms(settings, &Filter { query: args.query, all: args.all, old: args.old, days: args.days })?;
 
     let mut out = std::io::stdout().lock();
     writeln!(
@@ -141,4 +156,81 @@ fn print_room(
         writeln!(out, "{child_prefix}{}{name}", l.prefix)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use std::fs;
+
+    #[test]
+    fn selection_preserves_filters_labels_and_scan_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            config: Config { recent_days: 2, ..Config::default() },
+            config_path: dir.path().join("config.toml"),
+            root: dir.path().join("rooms"),
+            state_dir: dir.path().join("state"),
+            claude_dir: dir.path().join("claude"),
+        };
+        let today = room::today(&settings);
+        let mut labels = Vec::new();
+        for (slug, age, project, description, done) in [
+            ("current", 0, None, "新しい Needle", false),
+            ("finished", 0, None, "完了", true),
+            ("boundary", 2, None, "境界", false),
+            ("before", 3, None, "古い未完了", false),
+            ("archived", 5, Some("EXAMPLE"), "古い NEEDLE", true),
+            ("future", -1, None, "将来の日付", false),
+        ] {
+            let name = format!("{}-{slug}", today - TimeDelta::days(age));
+            let label = project.map_or_else(|| name.clone(), |p| format!("{p}/{name}"));
+            let path = settings.root.join(&label);
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join(room::README), format!("# {description}\n")).unwrap();
+            if done {
+                fs::write(path.join(room::DONE_MARKER), "").unwrap();
+            }
+            labels.push(label);
+        }
+        let cases = [
+            (Filter::default(), vec![5, 0, 2], "直近2日・進行中"),
+            (Filter { days: Some(0), ..Filter::default() }, vec![5, 0], "直近0日・進行中"),
+            (Filter { days: Some(1), ..Filter::default() }, vec![5, 0], "直近1日・進行中"),
+            (Filter { old: true, ..Filter::default() }, vec![3], "直近2日より前・未完了"),
+            (Filter { old: true, days: Some(0), ..Filter::default() }, vec![2, 3], "直近0日より前・未完了"),
+            (Filter { all: true, ..Filter::default() }, vec![5, 1, 0, 2, 3, 4], "全件"),
+            (Filter { query: Some("needle"), ..Filter::default() }, vec![0, 4], "「needle」に一致"),
+            (Filter { query: Some("BEFORE"), ..Filter::default() }, vec![3], "「BEFORE」に一致"),
+            (Filter { query: Some("example/"), ..Filter::default() }, vec![4], "「example/」に一致"),
+            (Filter { query: Some("境界"), ..Filter::default() }, vec![2], "「境界」に一致"),
+            (Filter { query: Some(""), ..Filter::default() }, vec![5, 1, 0, 2, 3, 4], "「」に一致"),
+            (Filter { query: Some("一致なし"), ..Filter::default() }, vec![], "「一致なし」に一致"),
+            (Filter { query: Some("needle"), all: true, old: true, days: Some(0) }, vec![0, 4], "「needle」に一致"),
+            (Filter { all: true, old: true, ..Filter::default() }, vec![3], "直近2日より前・未完了"),
+        ];
+        for (filter, indices, expected_label) in cases {
+            let (rooms, label) = select_rooms(&settings, &filter).unwrap();
+            let actual: Vec<_> = rooms.iter().map(Room::label).collect();
+            let expected: Vec<_> = indices.iter().map(|i| labels[*i].clone()).collect();
+            assert_eq!(actual, expected, "{filter:?}");
+            assert_eq!(label, expected_label, "{filter:?}");
+        }
+    }
+
+    #[test]
+    fn selection_does_not_create_missing_root_or_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            config: Config::default(),
+            config_path: dir.path().join("config.toml"),
+            root: dir.path().join("missing"),
+            state_dir: dir.path().join("state"),
+            claude_dir: dir.path().join("claude"),
+        };
+        let (rooms, _) = select_rooms(&settings, &Filter::default()).unwrap();
+        assert!(rooms.is_empty());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
 }

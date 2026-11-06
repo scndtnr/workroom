@@ -1,6 +1,98 @@
 //! tree 表示・プレビュー・ディスク使用量の計算。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    Directory,
+    File,
+    Symlink,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    /// 一覧の起点からの相対パス（表示名と違い、OS の文字列を保つ）。
+    pub path: PathBuf,
+    pub name: String,
+    pub kind: EntryKind,
+    /// 通常ファイルのサイズ。ディレクトリや取得できなかった場合は None。
+    pub size: Option<u64>,
+    pub modified: Option<SystemTime>,
+}
+
+pub struct EntriesOptions<'a> {
+    /// 起点の直下を 1 とする。0 なら走査しない。
+    pub depth: usize,
+    /// ディレクトリも含め、返す項目全体の上限。
+    pub max_items: usize,
+    pub exclude: &'a [String],
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Entries {
+    pub items: Vec<Entry>,
+    /// 深さの範囲内で、件数の上限により省いた項目数。
+    pub omitted: usize,
+}
+
+/// 中身を読まずにメタデータの一覧を作る。ドットで始まる名前と exclude は各階層で除く。
+/// ディレクトリを先に、大小文字を区別しない名前順の深さ優先で返す。
+/// リンク先はたどらず、読めないディレクトリは空として扱う（tree と同じ）。
+pub fn entries(path: &Path, opts: &EntriesOptions) -> Entries {
+    let mut out = Entries::default();
+    walk_entries(path, Path::new(""), opts.depth, opts, &mut out);
+    out
+}
+
+fn walk_entries(root: &Path, relative: &Path, depth: usize, opts: &EntriesOptions, out: &mut Entries) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(read) = std::fs::read_dir(root.join(relative)) else { return };
+    let mut items: Vec<_> = read
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || opts.exclude.iter().any(|x| x == &name) {
+                return None;
+            }
+            let kind = match entry.file_type() {
+                Ok(t) if t.is_dir() => EntryKind::Directory,
+                Ok(t) if t.is_file() => EntryKind::File,
+                Ok(t) if t.is_symlink() => EntryKind::Symlink,
+                _ => EntryKind::Other,
+            };
+            Some((entry, name, kind))
+        })
+        .collect();
+    items.sort_by(|a, b| {
+        (b.2 == EntryKind::Directory)
+            .cmp(&(a.2 == EntryKind::Directory))
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+            .then_with(|| a.0.file_name().cmp(&b.0.file_name()))
+    });
+    for (entry, name, kind) in items {
+        let path = relative.join(entry.file_name());
+        if out.items.len() < opts.max_items {
+            let metadata = std::fs::symlink_metadata(entry.path()).ok();
+            out.items.push(Entry {
+                path: path.clone(),
+                name,
+                kind,
+                size: metadata.as_ref().filter(|m| m.is_file()).map(|m| m.len()),
+                modified: metadata.and_then(|m| m.modified().ok()),
+            });
+        } else {
+            out.omitted += 1;
+        }
+        if kind == EntryKind::Directory {
+            // 上限を超えた後も深さの範囲内を数えるが、各項目のメタデータは取得しない。
+            walk_entries(root, &path, depth - 1, opts, out);
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeLine {
@@ -158,6 +250,120 @@ pub fn icon_for(name: &str, is_dir: bool) -> &'static str {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn entries_return_relative_paths_and_metadata_and_exclude_names_at_every_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("docs/sub")).unwrap();
+        for (name, contents) in [
+            ("README.md", "# 説明"),
+            ("b.txt", "12345"),
+            ("_visible", "残す"),
+            ("docs/a.md", "本文"),
+            ("docs/sub/deep.md", "abc"),
+            (".done", ""),
+            ("docs/.hidden", "除外"),
+            ("skip.txt", "除外"),
+            ("docs/skip.txt", "除外"),
+        ] {
+            fs::write(root.join(name), contents).unwrap();
+        }
+        for name in [".cache", "node_modules", "docs/node_modules"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+            fs::write(root.join(name).join("ignored.txt"), "除外").unwrap();
+        }
+        let exclude = vec!["node_modules".into(), "skip.txt".into()];
+        let listing = entries(root, &EntriesOptions { depth: 3, max_items: 100, exclude: &exclude });
+        let paths: Vec<_> = listing.items.iter().map(|e| e.path.clone()).collect();
+        assert_eq!(
+            paths,
+            ["docs", "docs/sub", "docs/sub/deep.md", "docs/a.md", "_visible", "b.txt", "README.md"].map(PathBuf::from)
+        );
+        assert_eq!(listing.omitted, 0);
+        for entry in listing.items {
+            let metadata = fs::symlink_metadata(root.join(&entry.path)).unwrap();
+            assert_eq!(entry.name, entry.path.file_name().unwrap().to_string_lossy());
+            assert_eq!(entry.modified, Some(metadata.modified().unwrap()));
+            if metadata.is_dir() {
+                assert_eq!(entry.kind, EntryKind::Directory);
+                assert_eq!(entry.size, None);
+            } else {
+                assert_eq!(entry.kind, EntryKind::File);
+                assert_eq!(entry.size, Some(metadata.len()));
+            }
+        }
+    }
+
+    #[test]
+    fn entries_limit_depth_and_total_items_and_count_omissions_within_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for name in ["a", "b"] {
+            fs::create_dir(root.join(name)).unwrap();
+        }
+        for name in ["a/1.txt", "a/2.txt", "b/1.txt", "c.txt"] {
+            fs::write(root.join(name), "").unwrap();
+        }
+        for (depth, max_items, expected, omitted) in [
+            (0, 100, vec![], 0),
+            (1, 100, vec!["a", "b", "c.txt"], 0),
+            (1, 2, vec!["a", "b"], 1),
+            (1, 0, vec![], 3),
+            (2, 3, vec!["a", "a/1.txt", "a/2.txt"], 3),
+            (2, 0, vec![], 6),
+            (2, 100, vec!["a", "a/1.txt", "a/2.txt", "b", "b/1.txt", "c.txt"], 0),
+        ] {
+            let listing = entries(root, &EntriesOptions { depth, max_items, exclude: &[] });
+            assert_eq!(
+                listing.items.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
+                expected.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
+                "depth={depth}, max_items={max_items}"
+            );
+            assert_eq!(listing.omitted, omitted, "depth={depth}, max_items={max_items}");
+        }
+    }
+
+    #[test]
+    fn entries_return_empty_for_missing_paths_and_files_without_creating_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        fs::write(&file, "").unwrap();
+        let opts = EntriesOptions { depth: 4, max_items: 500, exclude: &[] };
+        assert_eq!(entries(&dir.path().join("missing"), &opts), Entries::default());
+        assert_eq!(entries(&file, &opts), Entries::default());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn entries_list_symlinks_without_following_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let target = dir.path().join("target");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("outside.txt"), "一覧の外").unwrap();
+        let link = root.join("link");
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(&target, &link);
+        #[cfg(windows)]
+        let result = std::os::windows::fs::symlink_dir(&target, &link);
+        if let Err(error) = result {
+            #[cfg(windows)]
+            if error.kind() == std::io::ErrorKind::PermissionDenied || error.raw_os_error() == Some(1314) {
+                eprintln!("シンボリックリンクの作成権限がないためスキップ: {error}");
+                return;
+            }
+            panic!("シンボリックリンクを作れません: {error}");
+        }
+        let listing = entries(&root, &EntriesOptions { depth: 4, max_items: 500, exclude: &[] });
+        assert_eq!(listing.items.len(), 1);
+        assert_eq!(listing.items[0].kind, EntryKind::Symlink);
+        assert_eq!(listing.items[0].path, PathBuf::from("link"));
+        assert_eq!(listing.items[0].size, None);
+        assert_eq!(listing.omitted, 0);
+    }
 
     #[test]
     fn tree_and_usage() {
