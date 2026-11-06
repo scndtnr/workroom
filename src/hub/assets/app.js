@@ -4,8 +4,16 @@
   const content = $("content");
   let config;
   let generation = 0;
-  let appliedFilters = null;
   let controlFilterState = null;
+  let filterTimer = null;
+  let requestController = null;
+  const compactViewport = matchMedia("(max-width: 850px)");
+  let sidebarPreference = null;
+  try {
+    const saved = localStorage.getItem("workroom-hub-sidebar");
+    if (saved === "collapsed" || saved === "expanded") sidebarPreference = saved;
+  } catch { /* 保存できなくても表示する */ }
+  let sidebarCollapsed = sidebarPreference === null ? compactViewport.matches : sidebarPreference === "collapsed";
   let theme;
   try { theme = localStorage.getItem("workroom-hub-theme"); } catch { /* 保存できなくても表示する */ }
   if (theme === "dark" || theme === "light") document.documentElement.className = theme;
@@ -30,10 +38,13 @@
     for (const [key, value] of Object.entries(values)) params.set(key, String(value));
     const hash = params.toString();
     if (hash === location.hash.slice(1)) refresh();
-    else location.hash = hash;
+    else {
+      invalidateRequest();
+      location.hash = hash;
+    }
   }
   async function api(path) {
-    const response = await fetch(path, { cache: "no-store" });
+    const response = await fetch(path, { cache: "no-store", signal: requestController?.signal });
     if (!response.ok) throw new Error(`読み取れません（HTTP ${response.status}）`);
     return response.json();
   }
@@ -43,24 +54,49 @@
   function filterValues() {
     return { q: $("query").value, mode: $("mode").value, days: $("days").value || "0", sort: $("sort").value, unanswered: $("unanswered").checked ? "1" : "0" };
   }
-  function updateFilterButton() {
+  function invalidateRequest() {
+    generation++;
+    requestController?.abort();
+  }
+  function applyFilters() {
+    clearTimeout(filterTimer);
+    filterTimer = null;
+    if (!$("filters").checkValidity()) return;
     const values = filterValues();
-    const dirty = appliedFilters !== null && Object.keys(appliedFilters).some((key) => values[key] !== appliedFilters[key]);
-    const submit = $("show-filters");
-    submit.textContent = dirty ? "● この条件で表示" : "この条件で表示";
-    submit.classList.toggle("pending-filters", dirty);
-    submit.title = dirty ? "表示に反映していない条件があります" : "この条件で部屋の一覧を表示します";
+    // hashchange を待つ間に次の文字が入力されても、古い値で入力欄を戻さない。
+    controlFilterState = new URLSearchParams(values).toString();
+    change(values);
+  }
+  function scheduleFilters(delay) {
+    clearTimeout(filterTimer);
+    invalidateRequest();
+    notice();
+    if (delay === 0) applyFilters();
+    else filterTimer = setTimeout(applyFilters, delay);
   }
   function syncFilters(params) {
     const values = Object.fromEntries(scope(params));
     const key = new URLSearchParams(values).toString();
-    // 再取得やタブ移動だけでは、まだ決定していない入力を消さない。
+    // 入力待ちの間に再取得が走っても、入力中の文字を消さない。
     if (key !== controlFilterState) {
+      clearTimeout(filterTimer);
+      filterTimer = null;
       $("mode").value = values.mode; $("days").value = values.days; $("query").value = values.q;
       $("sort").value = values.sort; $("unanswered").checked = values.unanswered === "1";
       controlFilterState = key;
     }
-    updateFilterButton();
+  }
+  function updateSidebar() {
+    const roomPage = (state().get("page") || "rooms") === "rooms";
+    const visible = roomPage && !sidebarCollapsed;
+    $("rooms").hidden = !visible;
+    $("layout").classList.toggle("wide", !visible);
+    const toggle = $("sidebar-toggle");
+    toggle.disabled = !roomPage;
+    toggle.textContent = sidebarCollapsed ? "☰" : "◀";
+    toggle.title = visible ? "部屋の一覧を畳む" : "部屋の一覧を表示";
+    toggle.setAttribute("aria-label", toggle.title);
+    toggle.setAttribute("aria-expanded", String(visible));
   }
   function fileUrl(room, path, markdownTheme = true) {
     const url = new URL("/f/" + room.split("/").concat(path.split("/")).map(encodeURIComponent).join("/"), location.origin);
@@ -155,9 +191,12 @@
     if (size >= limit) parent.append(element("p", "先頭 1 MiB までを表示しています。", "muted"));
   }
   async function preview(parent, room, path, ticket) {
-    if (parent === content) content.classList.add("previewing");
+    if (ticket !== generation) return;
     const panel = element("section", undefined, "preview");
-    panel.append(element("h3", path));
+    const heading = element("div", undefined, "preview-header");
+    const title = element("h3", path);
+    title.title = path;
+    heading.append(title);
     const url = fileUrl(room, path);
     const toolbar = element("div", undefined, "toolbar");
     toolbar.append(separateTab(hubUrl(room, path)), separateTab(url, "ファイルだけを開く"));
@@ -169,7 +208,8 @@
         button("テキスト", () => change({ ...fileSelection(room, path), view: "text" }), textMode)
       );
     }
-    panel.append(toolbar);
+    heading.append(toolbar);
+    panel.append(heading);
     const body = element("div", undefined, "preview-body");
     panel.append(body);
     parent.append(panel);
@@ -188,7 +228,8 @@
       body.append(image);
     } else {
       url.searchParams.set("raw", "1");
-      const response = await fetch(url, { cache: "no-store" });
+      const response = await fetch(url, { cache: "no-store", signal: requestController?.signal });
+      if (ticket !== generation) { await response.body?.cancel(); return; }
       if (!response.ok) throw new Error(`読み取れません（HTTP ${response.status}）`);
       if (response.headers.get("Content-Type")?.startsWith("text/plain")) await textPreview(response, body, ticket);
       else {
@@ -211,7 +252,7 @@
         const file = button(item.path, () => change({ file: item.path }), params.get("file") === item.path);
         file.classList.add("file");
         line.append(file);
-        if (item.size !== null) line.append(element("span", ` · ${item.size.toLocaleString()} B`, "muted"));
+        if (item.size !== null) line.append(element("span", ` · ${item.size.toLocaleString()} B`, "file-size"));
       }
       list.append(line);
     }
@@ -220,47 +261,79 @@
   }
   async function showRoom(room, params, ticket) {
     const label = room.room;
-    content.append(element("h1", label));
-    content.append(element("p", `${room.state} · 未回答 ${room.unanswered} · 未反映 ${room.pending}`, "muted"));
+    const header = element("div", undefined, "room-header");
+    const heading = element("div", undefined, "room-heading");
+    const name = element("h1", label);
+    name.title = label;
+    heading.append(name, element("span", room.state, "badge " + statusClass(room.state)));
+    if (room.unanswered) heading.append(element("span", `未回答 ${room.unanswered}`, "badge unanswered"));
+    if (room.pending) heading.append(element("span", `未反映 ${room.pending}`, "badge pending"));
+    if (room.status && room.status !== room.state) {
+      const status = element("span", "status: " + room.status, "room-status");
+      status.title = status.textContent;
+      heading.append(status);
+    }
+    header.append(heading);
     const tabs = element("div", undefined, "tabs");
     const tab = params.get("tab") || "overview";
     for (const [key, text] of [["overview", "概要"], ["files", "成果物"], ["questions", `確認事項 ${room.unanswered + room.pending}`], ["other", "その他のファイル"]]) {
       tabs.append(button(text, () => change({ tab: key, file: "" }), tab === key));
     }
-    content.append(tabs);
-    warnings(content, room);
-    if (tab === "overview" && room.readme) await preview(content, label, "README.md", ticket);
-    else if (tab === "overview") {
-      content.append(element("p", "README.md がないため、成果物の一覧を表示します。", "muted"));
-      const files = await api("/api/files?" + new URLSearchParams({ room: label }));
-      if (ticket !== generation) return;
-      fileList(content, files.main, label, params);
-      if (params.get("file")) await preview(content, label, params.get("file"), ticket);
+    header.append(tabs);
+    content.append(header);
+    if (room.error || room.warnings?.length) {
+      const alerts = element("details");
+      alerts.append(element("summary", `読み取りの警告 ${room.warnings?.length || 0} 件${room.error ? "・エラーあり" : ""}`));
+      warnings(alerts, room);
+      header.append(alerts);
     }
-    else if (tab === "files" || tab === "other") {
+    if (tab === "overview" && room.readme) {
+      const pane = element("div", undefined, "view-pane");
+      content.append(pane);
+      await preview(pane, label, "README.md", ticket);
+    } else if (tab === "overview") {
       const files = await api("/api/files?" + new URLSearchParams({ room: label }));
       if (ticket !== generation) return;
-      fileList(content, files[tab === "files" ? "main" : "other"], label, params);
-      if (params.get("file")) await preview(content, label, params.get("file"), ticket);
+      await showFiles(files.main, label, params, ticket, "README.md がないため、成果物を表示します。");
+    } else if (tab === "files" || tab === "other") {
+      const files = await api("/api/files?" + new URLSearchParams({ room: label }));
+      if (ticket !== generation) return;
+      await showFiles(files[tab === "files" ? "main" : "other"], label, params, ticket);
     } else {
+      tabs.append(button(params.get("all") === "1" ? "未回答・未反映だけ" : "すべて", () => change({ all: params.get("all") === "1" ? "0" : "1" })));
+      const body = element("div", undefined, "content-body");
+      content.append(body);
       const data = await api("/api/questions?" + new URLSearchParams({ room: label }));
       if (ticket !== generation) return;
-      content.append(button(params.get("all") === "1" ? "未回答・未反映だけ" : "すべて", () => change({ all: params.get("all") === "1" ? "0" : "1" })));
-      warnings(content, data);
+      warnings(body, data);
       const questions = data.questions.filter((q) => params.get("all") === "1" || ["unanswered", "pending"].includes(q.state));
-      if (!questions.length) content.append(element("p", "確認事項はありません。", "muted"));
-      for (const question of questions) content.append(questionCard(question));
+      if (!questions.length) body.append(element("p", "確認事項はありません。", "muted"));
+      for (const question of questions) body.append(questionCard(question));
       for (const legacy of data.legacy) {
         const details = element("details");
         details.append(element("summary", "旧形式: " + legacy));
-        content.append(details);
+        body.append(details);
         details.addEventListener("toggle", () => {
-          if (details.open && details.childElementCount === 1) preview(details, label, legacy, ticket).catch(showError);
+          if (details.open && details.childElementCount === 1) preview(details, label, legacy, ticket).catch((error) => { if (ticket === generation) showError(error); });
         });
       }
     }
   }
-  function archiveFilters(groups, params) {
+  async function showFiles(group, room, params, ticket, message) {
+    if (ticket !== generation) return;
+    const workspace = element("div", undefined, "file-workspace");
+    const browser = element("aside", undefined, "file-browser");
+    browser.setAttribute("aria-label", "ファイルの一覧");
+    browser.append(element("h2", "ファイル"));
+    if (message) browser.append(element("p", message, "muted"));
+    fileList(browser, group, room, params);
+    const pane = element("div", undefined, "file-preview");
+    workspace.append(browser, pane);
+    content.append(workspace);
+    if (params.get("file")) await preview(pane, room, params.get("file"), ticket);
+    else pane.append(element("p", "ファイルを選択してください。", "muted"));
+  }
+  function archiveFilters(groups, params, parent) {
     const controls = element("div", undefined, "archive-filters");
     const rooms = element("select");
     rooms.setAttribute("aria-label", "アーカイブの部屋");
@@ -275,23 +348,26 @@
     const search = element("input"); search.type = "search"; search.placeholder = "質問・回答を検索"; search.setAttribute("aria-label", "質問・回答を検索"); search.value = params.get("search") || "";
     search.addEventListener("change", () => change({ search: search.value }));
     controls.append(rooms, status, search);
-    content.append(controls);
+    parent.append(controls);
   }
   async function showQuestions(params, ticket) {
     const archive = params.get("page") === "archive";
-    content.append(element("h1", archive ? "アーカイブ" : "確認事項（全部屋）"));
+    const header = element("div", undefined, "page-header");
+    header.append(element("h1", archive ? "アーカイブ" : "確認事項（全部屋）"));
+    const body = element("div", undefined, "content-body");
+    content.append(header, body);
     const data = await api("/api/questions/all?" + scope(params));
     if (ticket !== generation) return;
     if (archive) {
-      archiveFilters(data.rooms, params);
+      archiveFilters(data.rooms, params, header);
       const search = (params.get("search") || "").toLocaleLowerCase();
       const items = data.rooms.flatMap((group) => {
-        warnings(content, group);
+        warnings(body, group);
         return group.questions.map((question) => ({ room: group.room, question }));
       }).filter(({ room, question }) => (!params.get("archiveRoom") || room === params.get("archiveRoom")) && (!params.get("status") || question.state === params.get("status")) && archiveSearchText(question, room).includes(search));
       items.sort((a, b) => b.question.id.slice(2, 10).localeCompare(a.question.id.slice(2, 10)) || Number(b.question.id.slice(11)) - Number(a.question.id.slice(11)) || a.room.localeCompare(b.room));
-      content.append(element("p", `${items.length} 件`, "muted"));
-      for (const item of items) content.append(questionCard(item.question, item.room));
+      header.append(element("span", `${items.length} 件`, "muted"));
+      for (const item of items) body.append(questionCard(item.question, item.room));
     } else {
       let count = 0;
       for (const group of data.rooms) {
@@ -299,37 +375,42 @@
         const pending = group.questions.filter((q) => q.state === "pending");
         if (!unanswered.length && !pending.length && !group.error && !group.warnings.length) continue;
         count += unanswered.length + pending.length;
-        content.append(element("h2", group.room));
-        warnings(content, group);
-        for (const question of unanswered) content.append(questionCard(question));
+        body.append(element("h2", group.room));
+        warnings(body, group);
+        for (const question of unanswered) body.append(questionCard(question));
         if (pending.length) {
           const details = element("details");
           details.append(element("summary", `回答済み・未反映 ${pending.length} 件`));
           for (const question of pending) details.append(questionCard(question));
-          content.append(details);
+          body.append(details);
         }
       }
-      if (!count) content.append(element("p", "未回答・未反映の確認事項はありません。", "muted"));
+      if (!count) body.append(element("p", "未回答・未反映の確認事項はありません。", "muted"));
     }
   }
-  function showError(error) { $("notice").textContent = error.message || String(error); }
+  function notice(text = "", error = false) {
+    const node = $("notice");
+    node.textContent = text;
+    node.hidden = !text;
+    node.classList.toggle("error", error);
+  }
+  function showError(error) { notice(error.message || String(error), true); }
   async function refresh() {
     if (!config) return;
     const ticket = ++generation;
+    requestController?.abort();
+    requestController = new AbortController();
     const params = state();
-    $("notice").textContent = "読み込み中…";
-    content.classList.remove("previewing");
+    notice("読み込み中…");
     content.replaceChildren();
     syncFilters(params);
     const page = params.get("page") || "rooms";
     document.querySelectorAll("[data-page]").forEach((node) => node.setAttribute("aria-pressed", String(node.dataset.page === page)));
-    $("rooms").hidden = page !== "rooms"; $("layout").classList.toggle("wide", page !== "rooms");
+    updateSidebar();
     try {
       const data = await api("/api/rooms?" + scope(params));
       if (ticket !== generation) return;
-      appliedFilters = Object.fromEntries(scope(params));
-      updateFilterButton();
-      $("notice").textContent = `${data.label} · ${data.rooms.length} 部屋`;
+      $("rooms").setAttribute("aria-label", `${data.label} · ${data.rooms.length} 部屋`);
       $("rooms").replaceChildren();
       let selected = data.rooms.find((room) => room.room === params.get("room")) || data.rooms[0];
       if (selected && params.get("room") !== selected.room) {
@@ -354,14 +435,35 @@
         if (selected) await showRoom(selected, params, ticket);
         else content.append(element("p", "該当する部屋はありません。表示条件を変えてください。", "muted"));
       } else await showQuestions(params, ticket);
+      if (ticket === generation) notice();
     } catch (error) { if (ticket === generation) showError(error); }
   }
   $("filters").addEventListener("submit", (event) => {
     event.preventDefault();
-    change(filterValues());
+    applyFilters();
   });
-  $("filters").addEventListener("input", updateFilterButton);
-  $("filters").addEventListener("change", updateFilterButton);
+  $("filters").addEventListener("input", (event) => {
+    if (event.target.id === "query" || event.target.id === "days") scheduleFilters(300);
+  });
+  $("filters").addEventListener("change", (event) => {
+    if (["mode", "sort", "unanswered"].includes(event.target.id)) scheduleFilters(0);
+  });
+  $("filters").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.isComposing && ["query", "days"].includes(event.target.id)) {
+      event.preventDefault();
+      applyFilters();
+    }
+  });
+  $("sidebar-toggle").addEventListener("click", () => {
+    sidebarCollapsed = !sidebarCollapsed;
+    sidebarPreference = sidebarCollapsed ? "collapsed" : "expanded";
+    try { localStorage.setItem("workroom-hub-sidebar", sidebarPreference); } catch { /* 保存は任意 */ }
+    updateSidebar();
+  });
+  compactViewport.addEventListener("change", (event) => {
+    if (sidebarPreference === null) sidebarCollapsed = event.matches;
+    updateSidebar();
+  });
   document.querySelectorAll("[data-page]").forEach((node) => node.addEventListener("click", () => change({ page: node.dataset.page })));
   $("reload").addEventListener("click", refresh);
   $("theme").addEventListener("click", () => {
@@ -381,7 +483,7 @@
   window.addEventListener("afterprint", () => printDetails.forEach((details) => { details.open = false; }));
   api("/api/config").then((data) => {
     config = data;
-    $("root").textContent = data.root;
+    $("root").title = "作業ルート: " + data.root;
     const params = state();
     for (const [key, value] of Object.entries({ q: data.filter.query || "", mode: data.filter.mode, days: data.filter.days, page: "rooms", sort: "date" })) if (!params.has(key)) params.set(key, String(value));
     history.replaceState(null, "", "#" + params.toString());
