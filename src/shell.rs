@@ -113,7 +113,7 @@ Register-ArgumentCompleter -Native -CommandName __CMD__ -ScriptBlock {
     $words = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.ToString() })
     if ($wordToComplete) { $words = @($words | Select-Object -SkipLast 1) }
     if ($words.Count -eq 0) {
-        $candidates = @('new', 'ls', 'grep', 'done', 'undone', 'open', 'root', 'import', 'rules', 'config')
+        $candidates = @('new', 'ls', 'grep', 'done', 'undone', 'open', 'root', 'import', 'rules', 'q', 'config')
     } elseif ($words[0] -in @('done', 'undone', 'open') -and $words.Count -eq 1) {
         $__wr_exe = (Get-Command workroom -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
         if (-not $__wr_exe) { return }

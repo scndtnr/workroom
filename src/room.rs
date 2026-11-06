@@ -239,6 +239,55 @@ pub fn resolve(settings: &Settings, query: Option<&str>) -> Result<Room> {
     }
 }
 
+/// 全部屋を走査せず、カレントディレクトリの祖先だけから部屋を探す。
+pub fn resolve_cwd(settings: Option<&Settings>) -> Result<Room> {
+    resolve_cwd_at(settings, &std::env::current_dir()?)
+}
+
+fn resolve_cwd_at(settings: Option<&Settings>, cwd: &Path) -> Result<Room> {
+    let cwd = std::fs::canonicalize(cwd).context("カレントディレクトリを確認できません")?;
+    let root =
+        settings.map(|s| std::fs::canonicalize(&s.root).or_else(|_| std::path::absolute(&s.root))).transpose()?;
+    let mut found = None;
+    for path in cwd.ancestors() {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        let Some((date, slug)) = parse_room_name(name) else { continue };
+        if !path.join(README).is_file() && !path.join(AGENTS).is_file() {
+            continue;
+        }
+        let parent = path.parent();
+        let project = if let Some(root) = &root {
+            if parent == Some(root.as_path()) {
+                None
+            } else if parent.and_then(Path::parent) == Some(root.as_path()) {
+                let project = parent.and_then(Path::file_name).and_then(|n| n.to_str()).unwrap_or_default();
+                if is_hidden(project) || parse_room_name(project).is_some() {
+                    continue;
+                }
+                Some(project.to_string())
+            } else {
+                continue;
+            }
+        } else {
+            None
+        };
+        found = Some(Room {
+            name: name.into(),
+            path: path.into(),
+            project,
+            date,
+            slug: slug.clone(),
+            description: read_description(path, &slug),
+            done: path.join(DONE_MARKER).exists(),
+        });
+        if root.is_some() {
+            break;
+        }
+        // 設定なしでは最も外側を採用し、成果物の日付つきディレクトリを避ける。
+    }
+    found.context("部屋の中で実行するか、--room を指定してください")
+}
+
 /// 日付の区切り時刻を考慮した「今日」
 pub fn today(settings: &Settings) -> NaiveDate {
     (Local::now() - TimeDelta::hours(settings.config.day_start_hour as i64)).date_naive()
@@ -465,6 +514,30 @@ mod tests {
             state_dir: root.join("state"),
             claude_dir: root.join("claude"),
         }
+    }
+
+    #[test]
+    fn cwd_resolution_checks_structure_and_uses_outermost_room_without_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = test_settings(dir.path());
+        let outer = settings.root.join("EXAMPLE").join("2026-11-03-調査");
+        let nested = outer.join("outputs").join("2026-11-05-報告");
+        std::fs::create_dir_all(&nested).unwrap();
+        for path in [&outer, &nested] {
+            std::fs::write(path.join(README), "# 説明\n").unwrap();
+        }
+        let expected = std::fs::canonicalize(&outer).unwrap();
+        assert_eq!(resolve_cwd_at(Some(&settings), &nested).unwrap().path, expected);
+        assert_eq!(resolve_cwd_at(None, &nested).unwrap().path, expected);
+        assert_eq!(resolve_cwd_at(Some(&settings), &outer).unwrap().label(), "EXAMPLE/2026-11-03-調査");
+        assert!(resolve_cwd_at(Some(&settings), dir.path()).is_err());
+        let hidden = settings.root.join("_workroom").join("2026-11-03-hidden");
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(hidden.join(AGENTS), "ルール").unwrap();
+        assert!(resolve_cwd_at(Some(&settings), &hidden).is_err());
+        let no_marker = settings.root.join("2026-11-03-empty");
+        std::fs::create_dir_all(&no_marker).unwrap();
+        assert!(resolve_cwd_at(Some(&settings), &no_marker).is_err());
     }
 
     #[test]
