@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>workroom hub</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="brand"><strong>workroom <span>hub</span></strong><span class="read-only">読むだけ</span><span id="root"></span></div>
+    <nav aria-label="ページ">
+      <button type="button" data-page="rooms">部屋</button>
+      <button type="button" data-page="questions">確認事項（全部屋）</button>
+      <button type="button" data-page="archive">アーカイブ</button>
+    </nav>
+    <form id="filters">
+      <label>表示 <select id="mode"><option value="recent">直近・進行中</option><option value="all">全件</option><option value="old">古い未完了</option></select></label>
+      <label>日数 <input id="days" type="number" step="1" aria-label="日数"></label>
+      <label class="search">検索 <input id="query" type="search" placeholder="部屋名・説明"></label>
+      <label>順番 <select id="sort"><option value="date">新しい順</option><option value="updated">最終更新順</option><option value="unanswered">未回答が多い順</option></select></label>
+      <label><input id="unanswered" type="checkbox">未回答あり</label>
+      <button type="submit">適用</button>
+      <button id="reload" type="button" title="再読み込み" aria-label="再読み込み">⟳</button>
+      <button id="theme" type="button" title="配色を切り替える" aria-label="配色を切り替える">◐</button>
+    </form>
+  </header>
+  <p id="notice" role="status" aria-live="polite">読み込み中…</p>
+  <main id="layout">
+    <aside id="rooms" aria-label="部屋の一覧"></aside>
+    <article id="content" aria-label="部屋・成果物・確認事項"></article>
+  </main>
+  <noscript>成果物ハブを表示するには JavaScript を有効にしてください。</noscript>
+</body>
+</html>

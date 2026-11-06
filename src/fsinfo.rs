@@ -28,6 +28,8 @@ pub struct EntriesOptions<'a> {
     /// ディレクトリも含め、返す項目全体の上限。
     pub max_items: usize,
     pub exclude: &'a [String],
+    /// 起点直下だけで除外する名前（成果物の区分を分けるため）。
+    pub root_exclude: &'a [String],
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -55,7 +57,10 @@ fn walk_entries(root: &Path, relative: &Path, depth: usize, opts: &EntriesOption
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || opts.exclude.iter().any(|x| x == &name) {
+            if name.starts_with('.')
+                || opts.exclude.iter().any(|x| x == &name)
+                || (relative.as_os_str().is_empty() && opts.root_exclude.iter().any(|x| x == &name))
+            {
                 return None;
             }
             let kind = match entry.file_type() {
@@ -274,7 +279,7 @@ mod tests {
             fs::write(root.join(name).join("ignored.txt"), "除外").unwrap();
         }
         let exclude = vec!["node_modules".into(), "skip.txt".into()];
-        let listing = entries(root, &EntriesOptions { depth: 3, max_items: 100, exclude: &exclude });
+        let listing = entries(root, &EntriesOptions { depth: 3, max_items: 100, exclude: &exclude, root_exclude: &[] });
         let paths: Vec<_> = listing.items.iter().map(|e| e.path.clone()).collect();
         assert_eq!(
             paths,
@@ -314,7 +319,7 @@ mod tests {
             (2, 0, vec![], 6),
             (2, 100, vec!["a", "a/1.txt", "a/2.txt", "b", "b/1.txt", "c.txt"], 0),
         ] {
-            let listing = entries(root, &EntriesOptions { depth, max_items, exclude: &[] });
+            let listing = entries(root, &EntriesOptions { depth, max_items, exclude: &[], root_exclude: &[] });
             assert_eq!(
                 listing.items.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
                 expected.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
@@ -329,7 +334,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("file");
         fs::write(&file, "").unwrap();
-        let opts = EntriesOptions { depth: 4, max_items: 500, exclude: &[] };
+        let opts = EntriesOptions { depth: 4, max_items: 500, exclude: &[], root_exclude: &[] };
         assert_eq!(entries(&dir.path().join("missing"), &opts), Entries::default());
         assert_eq!(entries(&file, &opts), Entries::default());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
@@ -357,7 +362,7 @@ mod tests {
             }
             panic!("シンボリックリンクを作れません: {error}");
         }
-        let listing = entries(&root, &EntriesOptions { depth: 4, max_items: 500, exclude: &[] });
+        let listing = entries(&root, &EntriesOptions { depth: 4, max_items: 500, exclude: &[], root_exclude: &[] });
         assert_eq!(listing.items.len(), 1);
         assert_eq!(listing.items[0].kind, EntryKind::Symlink);
         assert_eq!(listing.items[0].path, PathBuf::from("link"));

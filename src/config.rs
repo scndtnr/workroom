@@ -22,6 +22,8 @@ pub struct Config {
     pub day_start_hour: u32,
     /// `ls` で既定表示する日数
     pub recent_days: i64,
+    /// 成果物ハブが待ち受けるポート（0 なら OS が選ぶ）
+    pub hub_port: u16,
     /// Nerd Font のアイコンを使うか
     pub icons: bool,
     /// 案件名の ASCII 英小文字を大文字にそろえるか（既存のディレクトリ名は変えない）
@@ -38,6 +40,7 @@ impl Default for Config {
             root: None,
             day_start_hour: 0,
             recent_days: 14,
+            hub_port: 47100,
             icons: false,
             project_uppercase: false,
             exclude: vec!["node_modules".into(), ".venv".into(), "__pycache__".into(), ".git".into()],
@@ -127,6 +130,9 @@ day_start_hour = 0
 # `ls` で既定表示する日数
 recent_days = 14
 
+# 成果物ハブのポート（0 なら OS が選ぶ）
+hub_port = 47100
+
 # Nerd Font のアイコンを使う
 icons = false
 
@@ -142,4 +148,20 @@ exclude = ["node_modules", ".venv", "__pycache__", ".git"]
 "#,
         root.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hub_port_defaults_and_sample_and_overrides() {
+        assert_eq!(Config::default().hub_port, 47100);
+        let sample: Config = toml::from_str(&sample_config(Path::new("~/workroom"))).unwrap();
+        assert_eq!(sample.hub_port, 47100);
+        assert_eq!(toml::from_str::<Config>("hub_port = 0").unwrap().hub_port, 0);
+        assert_eq!(toml::from_str::<Config>("hub_port = 48000").unwrap().hub_port, 48000);
+        assert!(toml::from_str::<Config>("hub_port = 65536").is_err());
+        assert!(toml::from_str::<Config>("hub_port = -1").is_err());
+    }
 }

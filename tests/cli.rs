@@ -394,6 +394,7 @@ fn config_shows_paths_and_init_writes_sample() {
     // 雛形はそのまま読み込める
     let out = stdout(&env.run(&["config"]));
     assert!(out.contains("recent_days = 14"), "{out}");
+    assert!(out.contains("hub_port = 47100"), "{out}");
 }
 
 #[test]
