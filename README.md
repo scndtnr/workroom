@@ -94,12 +94,22 @@ wk
 | `wk root` | 作業ルートへ移動 |
 | `wk import <path> [名前] [説明...] [--date D] [-p 案件]` | 既存ディレクトリと Claude Code の履歴を移行して移動 |
 | `wk rules sync [--dry-run]` | 各部屋の AGENTS.md を最新のテンプレートで更新 |
+| `workroom q ask <質問> [--by 名前]` | 質問を起票し、ID を出力する。背景・選択肢・推奨・元の質問も指定可 |
+| `workroom q pending [--json]` | 反映が要る回答と、未回答の件数・ID を表示する |
+| `workroom q done <ID> [--upto n] [--to 反映先] [--chat 要旨] [--by 名前]` | 回答を反映して解決を記録する。会話で受けた回答は `--chat` で記録 |
+| `workroom q withdraw <ID> --reason 理由 [--successor ID] [--by 名前]` | 無効になった質問を取り下げる |
+| `workroom q show [--all] [--json]` | 質問と回答を表示する。`--all` で解決済み・取り下げも含める |
 | `workroom init <pwsh\|nu\|bash\|zsh> [--cmd 名前]` | シェル連携のスクリプトを出力 |
 | `workroom config [--init]` | 設定の場所と内容を表示。`--init` で雛形を作成 |
 | `workroom --help` / `workroom --version` | ヘルプ / バージョンを表示 |
 
 `D` は `YYYY-MM-DD`。`new` では省略時に今日、`import` では移行元の名前の先頭の日付、なければ作成日（取得できなければ更新日）を使う。
 `done`・`undone`・`open` の名前は部分一致で指定できる。候補が複数ならエラーになる。
+
+`workroom q` は部屋の中（サブディレクトリも可）から実行する。各サブコマンドに `--room <名前>` を付ければ、部屋の外から部分一致で指定できる。
+質問の記録は部屋の直下の `QUESTIONS.jsonl` に追記する。`QUESTIONS.jsonl`・`ANSWERS.jsonl` は手で編集しない。
+この段階では回答は会話で受け、反映後に `workroom q done <ID> --chat "回答の要旨" --to "README などの反映先"` を実行する。
+`pending` に回答が出たら、表示された `done --upto …` の行をそのまま使う。終了コードは成功 0、実行時エラー 1、引数の誤り 2。
 
 サブコマンド名と一致しない語は TUI の検索語になる。同じ語を検索したい場合は `wk -- done`。PowerShell では `--` を引用し、`wk '--' done` と書く。
 ラッパーを通さずに `workroom new` などを実行すると、移動先のパスを表示するだけで、移動やエージェントの起動は行わない。
@@ -166,7 +176,7 @@ exclude = ["node_modules", ".venv", "__pycache__", ".git"]
 
 初めて部屋や作業ルートを作るとき、`<root>/_workroom/AGENTS.md` がなければ[内蔵のテンプレート](templates/AGENTS.md)から作る。
 このファイルを編集すると、それ以降に作る部屋の AGENTS.md に全文をコピーする。
-内蔵のテンプレートは、workroom を使ううえで必要な最小限のルール（部屋の中で作業する、README の1行目を一覧の説明にする、`.done` に触らない）だけを書いている。
+内蔵のテンプレートは、workroom を使ううえで必要な最小限のルール（部屋の中で作業する、README の1行目を一覧の説明にする、`.done` に触らない、確認事項をコマンドで扱う）だけを書いている。
 使うツールやファイルの置き方など、自分の流儀はこのファイルに書き足す。
 案件ごとの追加ルールは `<root>/<案件>/_workroom/AGENTS.md` に置く。全体のルールの後ろに連結する。
 

@@ -10,6 +10,7 @@ mod grep;
 mod history;
 mod import;
 mod ls;
+mod questions;
 mod room;
 mod rules;
 mod shell;
@@ -91,6 +92,8 @@ enum Cmd {
         #[command(subcommand)]
         command: RulesCmd,
     },
+    /// 部屋の確認事項を起票・確認・解決・取り下げする
+    Q(QArgs),
     /// シェル連携のラッパー関数を出力する
     Init {
         /// シェルの種類
@@ -118,6 +121,85 @@ enum RulesCmd {
         /// ファイルを書かずに、更新・作成の予定を表示する
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Args)]
+struct QArgs {
+    /// 部屋の名前（部分一致。省略するとカレントの部屋）
+    #[arg(long, global = true, value_name = "名前")]
+    room: Option<String>,
+    #[command(subcommand)]
+    command: QCmd,
+}
+
+#[derive(Subcommand)]
+enum QCmd {
+    /// ユーザーへの質問を起票し、ID を出力する
+    Ask {
+        /// 質問（1行、1000文字以内）
+        question: String,
+        /// 質問の背景（複数行可）
+        #[arg(long, value_name = "文")]
+        background: Option<String>,
+        /// 選択肢（繰り返し指定可）
+        #[arg(long = "choice", value_name = "文")]
+        choices: Vec<String>,
+        /// 勧める選択肢の番号（1 から）
+        #[arg(long, value_name = "番号")]
+        recommend: Option<usize>,
+        /// 聞き直す元の質問の ID
+        #[arg(long, value_name = "ID")]
+        origin: Option<String>,
+        /// 実行したエージェントの名前
+        #[arg(long, value_name = "名前")]
+        by: Option<String>,
+    },
+    /// 反映が要る回答と、未回答の件数・ID を表示する
+    Pending {
+        /// JSON で出力する
+        #[arg(long)]
+        json: bool,
+    },
+    /// 回答を反映した場所と、解決を記録する
+    Done {
+        /// 質問の ID
+        id: String,
+        /// この番号までの回答を反映する（pending の実行例を使う）
+        #[arg(long, value_name = "n")]
+        upto: Option<usize>,
+        /// 回答を反映した場所（回答不要のときは省略可）
+        #[arg(long, value_name = "反映先")]
+        to: Option<String>,
+        /// 会話で受けた回答の要旨
+        #[arg(long, value_name = "要旨")]
+        chat: Option<String>,
+        /// 実行したエージェントの名前
+        #[arg(long, value_name = "名前")]
+        by: Option<String>,
+    },
+    /// 無効になった質問を取り下げる
+    Withdraw {
+        /// 質問の ID
+        id: String,
+        /// 取り下げる理由
+        #[arg(long, value_name = "理由")]
+        reason: String,
+        /// 聞き直した後継の質問の ID
+        #[arg(long, value_name = "ID")]
+        successor: Option<String>,
+        /// 実行したエージェントの名前
+        #[arg(long, value_name = "名前")]
+        by: Option<String>,
+    },
+    /// 質問・回答の一覧を表示する
+    Show {
+        /// 解決済み・取り下げを含めて表示する
+        #[arg(long)]
+        all: bool,
+        /// JSON で出力する
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -234,6 +316,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
         print!("{}", shell::init_script(*shell, cmd));
         return Ok(ExitCode::SUCCESS);
     }
+    // q は設定が読めない環境でも、部屋の中から実行できる。
+    if let Cmd::Q(args) = command {
+        run_q(args)?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let settings = Settings::load()?;
     match command {
         Cmd::New(a) => {
@@ -315,8 +402,262 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
         }
         Cmd::Init { .. } => unreachable!(),
+        Cmd::Q(_) => unreachable!(),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn q_by(by: Option<String>) -> Option<String> {
+    by.or_else(|| std::env::var_os("CLAUDECODE").map(|_| "Claude Code".into()))
+}
+
+fn run_q(args: QArgs) -> Result<()> {
+    let settings = Settings::load();
+    let room = if let Some(name) = &args.room {
+        room::resolve(settings.as_ref().map_err(|e| anyhow::anyhow!("--room には設定が必要です: {e:#}"))?, Some(name))?
+    } else {
+        room::resolve_cwd(settings.as_ref().ok())?
+    };
+    if let Err(error) = &settings {
+        eprintln!("警告: 設定を読めないため、カレントの部屋と日付の既定値を使います: {error:#}");
+    }
+    let room_option =
+        if args.room.is_some() { format!(" --room {}", q_shell_quote(&room.label())) } else { String::new() };
+    let warnings = match args.command {
+        QCmd::Ask { question, background, choices, recommend, origin, by } => {
+            let date = settings.as_ref().map(room::today).unwrap_or_else(|_| chrono::Local::now().date_naive());
+            let ask = questions::Ask { question, background, choices, recommend, origin };
+            let ((id, unanswered), warnings) = questions::ask(&room.path, date, ask, q_by(by))?;
+            println!("{id}");
+            eprintln!("起票しました: {id}（未回答 {unanswered} 件）");
+            warnings
+        }
+        QCmd::Done { id, upto, to, chat, by } => {
+            let request = questions::DoneRequest { id: id.clone(), upto, to, chat, by: q_by(by) };
+            let (result, warnings) = questions::done(&room.path, request)?;
+            for answer in &result.answers {
+                print_q_answer(answer);
+            }
+            if let Some(to) = result.to {
+                eprintln!("{id} を解決済みにしました（反映先: {to}）");
+            } else {
+                eprintln!("{id} は指定した回答まで反映済みです（新しい記録はありません）");
+            }
+            warnings
+        }
+        QCmd::Withdraw { id, reason, successor, by } => {
+            let (result, warnings) = questions::withdraw(&room.path, &id, reason, successor, q_by(by))?;
+            if result.changed {
+                eprintln!("{id} を取り下げました");
+                if !result.done.is_empty() {
+                    println!(
+                        "{id} を取り下げました。この質問の回答は次に反映済みです。取り下げに合わせて見直してください:"
+                    );
+                    for event in &result.done {
+                        if let questions::EventKind::Done { to, .. } = &event.kind {
+                            println!("- {to}（{}）", q_time(&event.at));
+                        }
+                    }
+                }
+                if result.pending_count > 0 {
+                    println!("未反映の回答が {} 件あります（取り下げても回答は残ります）", result.pending_count);
+                }
+            } else {
+                eprintln!("{id} は既に取り下げ済みです");
+            }
+            warnings
+        }
+        QCmd::Pending { json } => {
+            let data = questions::read(&room.path)?;
+            let pending: Vec<_> = data.items.values().filter(|q| q.state == questions::State::Pending).collect();
+            let unanswered: Vec<_> = data
+                .items
+                .values()
+                .filter(|q| q.state == questions::State::Unanswered)
+                .map(|q| q.id.as_str())
+                .collect();
+            if json {
+                let pending: Vec<_> = pending
+                    .iter()
+                    .map(|q| {
+                        let ask = q.content();
+                        serde_json::json!({
+                            "id":q.id,"question":ask.question,"background":ask.background,
+                            "choices":ask.choices,"recommend":ask.recommend,
+                            "answers":q.pending_answers().iter().map(|a| serde_json::json!({
+                                "n":a.n,"at":a.at,"kind":a.kind,"text":a.text
+                            })).collect::<Vec<_>>(),"reflected_upto":q.reflected_upto
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({"room":room.label(),"pending":pending,"unanswered":unanswered,"warnings":data.warnings})
+                );
+            } else {
+                if !data.files_exist {
+                    println!("確認事項はありません。");
+                } else if pending.is_empty() {
+                    let ids =
+                        if unanswered.is_empty() { String::new() } else { format!(": {}", unanswered.join(", ")) };
+                    println!("確認事項：対応が要るものはありません（未回答 {} 件{ids}）。", unanswered.len());
+                } else {
+                    println!("# 確認事項：反映が要る回答（{}）\n", room.label());
+                    for q in pending {
+                        println!("## {} {}", q.id, q.content().question);
+                        if q.ask.is_none() {
+                            println!("- 質問なし（写しから表示）");
+                        }
+                        for answer in q.pending_answers() {
+                            print_q_answer(answer);
+                        }
+                        let not_needed = q.pending_answers().iter().all(|a| a.kind == questions::AnswerKind::NotNeeded);
+                        let (action, to) = if not_needed {
+                            ("確認したら", "")
+                        } else {
+                            ("反映したら", " --to \"<反映先>\"")
+                        };
+                        if q.ask.is_some() {
+                            println!(
+                                "- {action}: workroom q done {} --upto {}{to}{room_option}",
+                                q.id,
+                                q.answers.len()
+                            );
+                        } else {
+                            println!(
+                                "- 起票がないため解決を記録できません。QUESTIONS.jsonl の同期状態を確認してください。"
+                            );
+                        }
+                        if q.reflected_upto > 0 {
+                            println!("（前に反映済みの回答 {} 件。workroom q show で見られる）", q.reflected_upto);
+                        }
+                        println!();
+                    }
+                    println!("未回答 {} 件（ユーザーの回答待ち）: {}", unanswered.len(), unanswered.join(", "));
+                }
+                for warning in &data.warnings {
+                    println!("{warning}");
+                }
+            }
+            data.warnings
+        }
+        QCmd::Show { all, json } => {
+            let data = questions::read(&room.path)?;
+            let items: Vec<_> = data
+                .items
+                .values()
+                .filter(|q| all || matches!(q.state, questions::State::Unanswered | questions::State::Pending))
+                .collect();
+            if json {
+                println!("{}", serde_json::json!({"room":room.label(),"questions":items,"warnings":data.warnings}));
+            } else {
+                if items.is_empty() {
+                    println!("確認事項はありません。");
+                }
+                for q in items {
+                    print_q_question(q);
+                }
+                for warning in &data.warnings {
+                    println!("{warning}");
+                }
+            }
+            data.warnings
+        }
+    };
+    for warning in warnings {
+        eprintln!("{warning}");
+    }
+    Ok(())
+}
+
+fn q_time(at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(at)
+        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| at.into())
+}
+
+/// 実行例の部屋名を Windows では PowerShell、それ以外では POSIX シェル向けに引用する。
+fn q_shell_quote(value: &str) -> String {
+    let escaped = if cfg!(windows) { value.replace('\'', "''") } else { value.replace('\'', "'\\''") };
+    format!("'{escaped}'")
+}
+
+fn print_q_text(text: &str) {
+    for line in text.lines() {
+        println!("  {line}");
+    }
+}
+
+fn print_q_answer(answer: &questions::Answer) {
+    if answer.kind == questions::AnswerKind::NotNeeded {
+        if answer.text.is_empty() {
+            println!("- ユーザーは回答不要とした（理由なし）");
+        } else {
+            println!("- ユーザーは回答不要とした（理由）:");
+            print_q_text(&answer.text);
+        }
+    } else {
+        println!("- 回答（{}）:", q_time(&answer.at));
+        print_q_text(&answer.text);
+    }
+}
+
+fn print_q_question(q: &questions::Question) {
+    println!("## {} {}\n- 状態: {}", q.id, q.content().question, q.state.label());
+    if q.ask.is_none() {
+        println!("- 質問なし（写しから表示）");
+    }
+    if let Some(ask) = &q.ask {
+        println!("- 起票: {}{}", q_time(&ask.at), ask.by.as_ref().map(|by| format!("（{by}）")).unwrap_or_default());
+    } else if let Some(answer) = q.answers.first() {
+        let snapshot = &answer.question;
+        if let Some(at) = &snapshot.asked_at {
+            println!(
+                "- 起票（写し）: {}{}",
+                q_time(at),
+                snapshot.by.as_ref().map(|by| format!("（{by}）")).unwrap_or_default()
+            );
+        } else if let Some(by) = &snapshot.by {
+            println!("- 起票者（写し）: {by}");
+        }
+    }
+    let content = q.content();
+    if let Some(background) = &content.background {
+        println!("- 背景:");
+        print_q_text(background);
+    }
+    for (i, choice) in content.choices.iter().enumerate() {
+        let recommend = if content.recommend == Some(i + 1) { "（推奨）" } else { "" };
+        println!("- 選択肢 {}{recommend}: {choice}", i + 1);
+    }
+    if let Some(origin) = &content.origin {
+        println!("- 元の質問: {origin}");
+    }
+    for answer in &q.answers {
+        print_q_answer(answer);
+    }
+    for event in &q.done {
+        if let questions::EventKind::Done { to, upto, chat } = &event.kind {
+            println!("- 反映先: {to}（{}、回答 {upto} まで）", q_time(&event.at));
+            if let Some(chat) = chat {
+                println!("- 会話での回答:");
+                print_q_text(chat);
+            }
+        }
+    }
+    if let Some(event) = q.withdrawals.last()
+        && let questions::EventKind::Withdraw { reason, successor } = &event.kind
+    {
+        println!("- 取り下げの理由:");
+        print_q_text(reason);
+        if let Some(successor) = successor {
+            println!("- 後継: {successor}");
+        }
+        if !q.answers.is_empty() {
+            println!("- 取り下げた項目への回答を含みます（回答は記録として残ります）");
+        }
+    }
+    println!();
 }
 
 /// 部屋へ移動する（使用履歴を記録して、ラッパー関数に移動先を渡す）
