@@ -15,16 +15,20 @@
       <button type="button" data-page="questions">確認事項（全部屋）</button>
       <button type="button" data-page="archive">アーカイブ</button>
     </nav>
-    <form id="filters">
-      <label>表示 <select id="mode"><option value="recent">直近・進行中</option><option value="all">全件</option><option value="old">古い未完了</option></select></label>
-      <label>日数 <input id="days" type="number" step="1" aria-label="日数"></label>
-      <label class="search">検索 <input id="query" type="search" placeholder="部屋名・説明"></label>
-      <label>順番 <select id="sort"><option value="date">新しい順</option><option value="updated">最終更新順</option><option value="unanswered">未回答が多い順</option></select></label>
-      <label><input id="unanswered" type="checkbox">未回答あり</label>
-      <button type="submit">適用</button>
-      <button id="reload" type="button" title="再読み込み" aria-label="再読み込み">⟳</button>
-      <button id="theme" type="button" title="配色を切り替える" aria-label="配色を切り替える">◐</button>
-    </form>
+    <div class="filter-bar">
+      <form id="filters" aria-label="表示条件">
+        <label>表示 <select id="mode"><option value="recent">直近・進行中</option><option value="all">全件</option><option value="old">古い未完了</option></select></label>
+        <label>日数 <input id="days" type="number" step="1" aria-label="日数"></label>
+        <label class="search">検索 <input id="query" type="search" placeholder="部屋名・説明"></label>
+        <label>順番 <select id="sort"><option value="date">新しい順</option><option value="updated">最終更新順</option><option value="unanswered">未回答が多い順</option></select></label>
+        <label><input id="unanswered" type="checkbox">未回答あり</label>
+        <button id="show-filters" class="primary" type="submit">この条件で表示</button>
+      </form>
+      <div class="hub-actions" role="group" aria-label="表示の操作">
+        <button id="reload" type="button" title="再読み込み" aria-label="再読み込み">⟳</button>
+        <button id="theme" type="button" title="配色を切り替える" aria-label="配色を切り替える">◐</button>
+      </div>
+    </div>
   </header>
   <p id="notice" role="status" aria-live="polite">読み込み中…</p>
   <main id="layout">

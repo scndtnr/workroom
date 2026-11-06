@@ -185,6 +185,7 @@ fn fixture(env: &Env) -> PathBuf {
     )
     .unwrap();
     fs::write(room.join("docs/image.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>").unwrap();
+    fs::write(room.join("docs/report.MD.TXT"), "# 二重拡張子の本文\n").unwrap();
     fs::write(room.join("QUESTIONS.md"), "# 旧形式の質問\n").unwrap();
     let at = "2026-11-06T12:00:00+09:00";
     let events = [
@@ -270,6 +271,19 @@ fn renders_markdown_raw_images_and_rejects_bad_hosts_and_paths() {
     let raw = hub.get(&format!("{prefix}docs/a.md?raw=1"));
     assert_eq!(raw.headers["content-type"], "text/plain; charset=utf-8");
     assert!(raw.body.starts_with("# 本文".as_bytes()));
+    let rendered = hub.get(&format!("{prefix}docs/report.MD.TXT"));
+    assert_eq!(rendered.status, 200);
+    let html = String::from_utf8(rendered.body).unwrap();
+    assert!(html.contains("<h1>二重拡張子の本文</h1>"));
+    assert!(html.contains(&format!(
+        "href=\"http://127.0.0.1:{}/#page=rooms&amp;room=EXAMPLE%2F2026-11-03-%E8%AA%BF%E6%9F%BB",
+        hub.port
+    )));
+    assert!(html.contains("file=docs%2Freport.MD.TXT"));
+    assert!(html.contains("target=\"_blank\" rel=\"noopener noreferrer\""));
+    let raw = hub.get(&format!("{prefix}docs/report.MD.TXT?raw=1"));
+    assert_eq!(raw.headers["content-type"], "text/plain; charset=utf-8");
+    assert_eq!(String::from_utf8(raw.body).unwrap(), "# 二重拡張子の本文\n");
     for suffix in ["../secret", "%2e%2e/secret", "docs%2Fa.md", "NUL", ".done", "a.txt:stream", "a%5cb", "a%20"] {
         assert_eq!(hub.get(&format!("{prefix}{suffix}")).status, 404, "{suffix}");
     }

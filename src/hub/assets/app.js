@@ -4,11 +4,14 @@
   const content = $("content");
   let config;
   let generation = 0;
+  let appliedFilters = null;
+  let controlFilterState = null;
   let theme;
   try { theme = localStorage.getItem("workroom-hub-theme"); } catch { /* 保存できなくても表示する */ }
   if (theme === "dark" || theme === "light") document.documentElement.className = theme;
   const currentTheme = () => theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   const state = () => new URLSearchParams(location.hash.slice(1));
+  const isMarkdown = (path) => /\.md(?:\.txt)?$/i.test(path);
   function element(tag, text, className) {
     const node = document.createElement(tag);
     if (text !== undefined) node.textContent = text;
@@ -37,13 +40,46 @@
   function scope(params) {
     return new URLSearchParams({ q: params.get("q") || "", mode: params.get("mode") || "recent", days: params.get("days") || "0", sort: params.get("sort") || "date", unanswered: params.get("unanswered") || "0" });
   }
+  function filterValues() {
+    return { q: $("query").value, mode: $("mode").value, days: $("days").value || "0", sort: $("sort").value, unanswered: $("unanswered").checked ? "1" : "0" };
+  }
+  function updateFilterButton() {
+    const values = filterValues();
+    const dirty = appliedFilters !== null && Object.keys(appliedFilters).some((key) => values[key] !== appliedFilters[key]);
+    const submit = $("show-filters");
+    submit.textContent = dirty ? "● この条件で表示" : "この条件で表示";
+    submit.classList.toggle("pending-filters", dirty);
+    submit.title = dirty ? "表示に反映していない条件があります" : "この条件で部屋の一覧を表示します";
+  }
+  function syncFilters(params) {
+    const values = Object.fromEntries(scope(params));
+    const key = new URLSearchParams(values).toString();
+    // 再取得やタブ移動だけでは、まだ決定していない入力を消さない。
+    if (key !== controlFilterState) {
+      $("mode").value = values.mode; $("days").value = values.days; $("query").value = values.q;
+      $("sort").value = values.sort; $("unanswered").checked = values.unanswered === "1";
+      controlFilterState = key;
+    }
+    updateFilterButton();
+  }
   function fileUrl(room, path, markdownTheme = true) {
     const url = new URL("/f/" + room.split("/").concat(path.split("/")).map(encodeURIComponent).join("/"), location.origin);
-    if (markdownTheme && /\.md$/i.test(path)) url.searchParams.set("theme", currentTheme());
+    if (markdownTheme && isMarkdown(path)) url.searchParams.set("theme", currentTheme());
     return url;
   }
-  function separateTab(url) {
-    const link = element("a", "別タブで開く");
+  function fileSelection(room, path) {
+    const tab = state().get("tab");
+    return { page: "rooms", room, tab: tab === "files" || tab === "other" ? tab : path.toLowerCase() === "readme.md" ? "overview" : "files", file: path };
+  }
+  function hubUrl(room, path) {
+    const url = new URL("/", location.origin);
+    const params = state();
+    for (const [key, value] of Object.entries(fileSelection(room, path))) params.set(key, value);
+    url.hash = params.toString();
+    return url;
+  }
+  function separateTab(url, text = "別タブで開く") {
+    const link = element("a", text);
     link.href = url;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
@@ -119,37 +155,49 @@
     if (size >= limit) parent.append(element("p", "先頭 1 MiB までを表示しています。", "muted"));
   }
   async function preview(parent, room, path, ticket) {
+    if (parent === content) content.classList.add("previewing");
     const panel = element("section", undefined, "preview");
     panel.append(element("h3", path));
     const url = fileUrl(room, path);
     const toolbar = element("div", undefined, "toolbar");
-    toolbar.append(separateTab(url));
+    toolbar.append(separateTab(hubUrl(room, path)), separateTab(url, "ファイルだけを開く"));
+    const markdown = isMarkdown(path);
+    const textMode = state().get("view") === "text";
+    if (markdown) {
+      toolbar.append(
+        button("プレビュー", () => change({ ...fileSelection(room, path), view: "preview" }), !textMode),
+        button("テキスト", () => change({ ...fileSelection(room, path), view: "text" }), textMode)
+      );
+    }
     panel.append(toolbar);
+    const body = element("div", undefined, "preview-body");
+    panel.append(body);
     parent.append(panel);
     const extension = path.split(".").at(-1).toLowerCase();
-    if (["md", "html", "htm", "pdf"].includes(extension)) {
+    if ((markdown && !textMode) || ["html", "htm", "pdf"].includes(extension)) {
+      body.classList.add("framed");
       const frame = element("iframe");
       frame.title = path;
-      if (extension !== "pdf") frame.setAttribute("sandbox", extension === "md" ? "allow-popups allow-popups-to-escape-sandbox" : "allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox");
+      if (extension !== "pdf") frame.setAttribute("sandbox", markdown ? "allow-popups allow-popups-to-escape-sandbox" : "allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox");
       frame.src = url;
-      panel.append(frame);
+      body.append(frame);
     } else if (["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svg"].includes(extension)) {
       const image = element("img");
       image.alt = path;
       image.src = url;
-      panel.append(image);
+      body.append(image);
     } else {
       url.searchParams.set("raw", "1");
       const response = await fetch(url, { cache: "no-store" });
       if (!response.ok) throw new Error(`読み取れません（HTTP ${response.status}）`);
-      if (response.headers.get("Content-Type")?.startsWith("text/plain")) await textPreview(response, panel, ticket);
+      if (response.headers.get("Content-Type")?.startsWith("text/plain")) await textPreview(response, body, ticket);
       else {
         await response.body.cancel();
         if (ticket !== generation) return;
         const download = element("a", "ダウンロード");
         download.href = url;
         download.download = "";
-        panel.append(download);
+        body.append(download);
       }
     }
   }
@@ -270,15 +318,17 @@
     const ticket = ++generation;
     const params = state();
     $("notice").textContent = "読み込み中…";
+    content.classList.remove("previewing");
     content.replaceChildren();
-    $("mode").value = params.get("mode"); $("days").value = params.get("days"); $("query").value = params.get("q") || "";
-    $("sort").value = params.get("sort") || "date"; $("unanswered").checked = params.get("unanswered") === "1";
+    syncFilters(params);
     const page = params.get("page") || "rooms";
     document.querySelectorAll("[data-page]").forEach((node) => node.setAttribute("aria-pressed", String(node.dataset.page === page)));
     $("rooms").hidden = page !== "rooms"; $("layout").classList.toggle("wide", page !== "rooms");
     try {
       const data = await api("/api/rooms?" + scope(params));
       if (ticket !== generation) return;
+      appliedFilters = Object.fromEntries(scope(params));
+      updateFilterButton();
       $("notice").textContent = `${data.label} · ${data.rooms.length} 部屋`;
       $("rooms").replaceChildren();
       let selected = data.rooms.find((room) => room.room === params.get("room")) || data.rooms[0];
@@ -308,8 +358,10 @@
   }
   $("filters").addEventListener("submit", (event) => {
     event.preventDefault();
-    change({ q: $("query").value, mode: $("mode").value, days: $("days").value, sort: $("sort").value, unanswered: $("unanswered").checked ? "1" : "0" });
+    change(filterValues());
   });
+  $("filters").addEventListener("input", updateFilterButton);
+  $("filters").addEventListener("change", updateFilterButton);
   document.querySelectorAll("[data-page]").forEach((node) => node.addEventListener("click", () => change({ page: node.dataset.page })));
   $("reload").addEventListener("click", refresh);
   $("theme").addEventListener("click", () => {

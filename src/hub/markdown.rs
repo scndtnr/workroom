@@ -2,9 +2,35 @@
 
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd, html};
 use sha2::{Digest, Sha256};
+use std::path::Path;
 
 pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
 pub const STYLE: &str = include_str!("assets/md.css");
+
+pub fn is_markdown(path: &Path) -> bool {
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_ascii_lowercase();
+    name.ends_with(".md") || name.ends_with(".md.txt")
+}
+
+pub fn hub_url(port: u16, room: &str, file: &str) -> String {
+    fn encode(value: &str) -> String {
+        use std::fmt::Write;
+        value.bytes().fold(String::new(), |mut encoded, byte| {
+            if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+                encoded.push(byte as char);
+            } else {
+                let _ = write!(encoded, "%{byte:02X}");
+            }
+            encoded
+        })
+    }
+    let tab = if file.eq_ignore_ascii_case("README.md") { "overview" } else { "files" };
+    format!(
+        "http://127.0.0.1:{port}/#page=rooms&room={}&tab={tab}&file={}&mode=all&q=&view=preview",
+        encode(room),
+        encode(file)
+    )
+}
 
 fn style_text() -> String {
     // HTML の改行正規化後の文字列と一致させる（Windows の checkout にも対応）。
@@ -26,7 +52,7 @@ fn allowed_url(url: &str) -> bool {
     }
 }
 
-pub fn render(bytes: &[u8], theme: Option<&str>) -> String {
+pub fn render(bytes: &[u8], theme: Option<&str>, hub_url: Option<&str>) -> String {
     let style = style_text();
     let text = String::from_utf8_lossy(bytes);
     let invalid_utf8 = std::str::from_utf8(bytes).is_err();
@@ -70,8 +96,9 @@ pub fn render(bytes: &[u8], theme: Option<&str>) -> String {
     } else {
         ""
     };
+    let hub_link = hub_url.map(|url| format!("<nav class=\"hub-link\"><a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">ハブでこのファイルを開く</a></nav>", escape(url))).unwrap_or_default();
     format!(
-        "<!doctype html><html lang=\"ja\"{class}><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>workroom Markdown</title><style>{style}</style></head><body>{warning}<main>{body}</main></body></html>"
+        "<!doctype html><html lang=\"ja\"{class}><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>workroom Markdown</title><style>{style}</style></head><body>{hub_link}{warning}<main>{body}</main></body></html>"
     )
 }
 
@@ -103,7 +130,7 @@ mod tests {
 
     #[test]
     fn escapes_html_and_removes_unsafe_link_and_image_schemes() {
-        let output = render(b"<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[x](javascript:alert) ![alt](data:text/html,evil) [y](JaVaScRiPt:evil) [z](javascript&colon;evil)", None);
+        let output = render(b"<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[x](javascript:alert) ![alt](data:text/html,evil) [y](JaVaScRiPt:evil) [z](javascript&colon;evil)", None, None);
         assert!(output.contains("&lt;script&gt;"));
         assert!(output.contains("&lt;img"));
         assert!(!output.contains("<script>"));
@@ -116,7 +143,7 @@ mod tests {
 
     #[test]
     fn preserves_relative_links_images_and_extensions_and_marks_external_links() {
-        let output = render(b"[next](../docs/a.md) ![image](images/a.png) [web](https://example.com/?a=1&b=2)\n\n|a|b|\n|-|-|\n|1|2|\n\n- [x] done\n\n~~old~~ note[^1]\n\n[^1]: footnote", Some("dark"));
+        let output = render(b"[next](../docs/a.md) ![image](images/a.png) [web](https://example.com/?a=1&b=2)\n\n|a|b|\n|-|-|\n|1|2|\n\n- [x] done\n\n~~old~~ note[^1]\n\n[^1]: footnote", Some("dark"), None);
         assert!(output.contains("href=\"../docs/a.md\""));
         assert!(output.contains("src=\"images/a.png\""));
         assert!(output.contains("target=\"_blank\" rel=\"noopener noreferrer\""));
@@ -129,7 +156,7 @@ mod tests {
 
     #[test]
     fn embedded_style_hash_matches_csp_and_invalid_utf8_is_visible() {
-        let output = render(b"bad\xff", Some("\"><script>"));
+        let output = render(b"bad\xff", Some("\"><script>"), None);
         let style = output.split_once("<style>").unwrap().1.split_once("</style>").unwrap().0;
         let hash = base64(&Sha256::digest(style.as_bytes()));
         let policy = csp(49123);
@@ -148,11 +175,35 @@ mod tests {
         let input = "<reader@example.invalid> [明示](mailto:writer@example.invalid)";
         let mut default_html = String::new();
         html::push_html(&mut default_html, Parser::new(input));
-        let output = render(input.as_bytes(), None);
+        let output = render(input.as_bytes(), None, None);
         for href in ["href=\"mailto:reader@example.invalid\"", "href=\"mailto:writer@example.invalid\""] {
             assert!(default_html.contains(href));
             assert!(output.contains(href));
         }
         assert!(!output.contains("mailto:mailto:"));
+    }
+
+    #[test]
+    fn recognizes_markdown_and_double_extensions_without_case_sensitivity() {
+        for name in ["a.md", "a.MD", "a.md.txt", "a.Md.TxT", "a.MD.TXT"] {
+            assert!(is_markdown(Path::new(name)), "{name}");
+        }
+        for name in ["a.txt", "a.md.txt.bak", "a.md.html", "md.txt"] {
+            assert!(!is_markdown(Path::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn hub_link_encodes_room_and_file_and_preserves_the_sandbox_policy() {
+        let url = hub_url(49123, "EXAMPLE/2026-11-03-調査", "docs/報告 & a+1.md.txt");
+        assert_eq!(
+            url,
+            "http://127.0.0.1:49123/#page=rooms&room=EXAMPLE%2F2026-11-03-%E8%AA%BF%E6%9F%BB&tab=files&file=docs%2F%E5%A0%B1%E5%91%8A%20%26%20a%2B1.md.txt&mode=all&q=&view=preview"
+        );
+        let output = render(b"# title", None, Some(&url));
+        assert!(output.contains(&format!("href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\"", escape(&url))));
+        assert!(output.find("ハブでこのファイルを開く").unwrap() < output.find("<main>").unwrap());
+        assert!(csp(49123).starts_with("sandbox allow-popups allow-popups-to-escape-sandbox; default-src 'none';"));
+        assert!(!csp(49123).contains("allow-same-origin"));
     }
 }

@@ -182,15 +182,18 @@ fn serve_file(state: &State, encoded: &str, params: &Parameters) -> Result<Respo
     let path = paths::file_path(&state.settings.root, encoded)?;
     let mut file = File::open(&path).map_err(|_| 404u16)?;
     let length = file.metadata().map_err(|_| 404u16)?.len();
-    let markdown = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"));
+    let markdown = markdown::is_markdown(&path);
     if markdown && params.get("raw").is_none_or(|v| v != "1") && length <= markdown::MAX_BYTES {
         let mut bytes = Vec::new();
         (&mut file).take(markdown::MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|_| 500u16)?;
         if bytes.len() as u64 <= markdown::MAX_BYTES {
+            let parts = paths::components(encoded)?;
+            let room_len = if crate::room::parse_room_name(&parts[0]).is_some() { 1 } else { 2 };
+            let hub_url = markdown::hub_url(state.port, &parts[..room_len].join("/"), &parts[room_len..].join("/"));
             return Ok(Response::bytes(
                 200,
                 "text/html; charset=utf-8",
-                markdown::render(&bytes, params.get("theme").map(String::as_str)),
+                markdown::render(&bytes, params.get("theme").map(String::as_str), Some(&hub_url)),
             )
             .header("Content-Security-Policy", markdown::csp(state.port)));
         }
@@ -340,6 +343,35 @@ mod tests {
         let mut file = File::open(&path).unwrap();
         assert_eq!(file_type(&path, &mut file).unwrap(), "text/plain; charset=utf-8");
         assert_eq!(file.stream_position().unwrap(), 8192);
+    }
+
+    #[test]
+    fn markdown_double_extensions_render_with_hub_links_and_keep_raw_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_state(dir.path());
+        let room = dir.path().join("EXAMPLE/2026-11-03-調査");
+        fs::create_dir_all(room.join("docs")).unwrap();
+        for name in ["a.md.txt", "b.MD.TXT", "c.Md.TxT"] {
+            fs::write(room.join("docs").join(name), "# 見出し\n").unwrap();
+            let target = format!("/f/EXAMPLE/2026-11-03-%E8%AA%BF%E6%9F%BB/docs/{name}");
+            let response = handle(&state, &request(&target));
+            assert_eq!(response.status, 200);
+            assert_eq!(header(&response, "Content-Type"), "text/html; charset=utf-8");
+            assert_eq!(header(&response, "Content-Security-Policy"), markdown::csp(state.port));
+            let Body::Bytes(bytes) = response.body else { panic!("描画した HTML を返すこと") };
+            let html = String::from_utf8(bytes).unwrap();
+            assert!(html.contains("<h1>見出し</h1>"));
+            assert!(html.contains(
+                "href=\"http://127.0.0.1:49123/#page=rooms&amp;room=EXAMPLE%2F2026-11-03-%E8%AA%BF%E6%9F%BB"
+            ));
+            assert!(html.contains(&format!("file=docs%2F{name}")));
+            let response = handle(&state, &request(&format!("{target}?raw=1")));
+            assert_eq!(header(&response, "Content-Type"), "text/plain; charset=utf-8");
+            let Body::File(mut file, _) = response.body else { panic!("元のファイルを返すこと") };
+            let mut source = String::new();
+            file.read_to_string(&mut source).unwrap();
+            assert_eq!(source, "# 見出し\n");
+        }
     }
 
     #[test]
