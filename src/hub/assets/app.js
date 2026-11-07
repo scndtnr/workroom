@@ -9,6 +9,17 @@
   let questionFilterTimer = null;
   let controlQuestionFilterState = null;
   let requestController = null;
+  let rootHash;
+  const drafts = new Map();
+  const answerErrors = new Map();
+  const additionalAnswersOpen = new Set();
+  let draftWarningShown = false;
+  let questionGroups = [];
+  let renderedQuestionParams = null;
+  let composingAnswer = false;
+  let deferredQuestionRender = null;
+  let confirmation = null;
+  let submitting = false;
   const compactViewport = matchMedia("(max-width: 850px)");
   let sidebarPreference = null;
   try {
@@ -262,6 +273,281 @@
     link.href = questionUrl(room, id, roomPage);
     return link;
   }
+  const draftPrefix = () => `workroom-hub-draft:${rootHash}:`;
+  const draftKey = (room, id) => draftPrefix() + encodeURIComponent(room) + ":" + encodeURIComponent(id);
+  const hasDraft = (draft) => Boolean(draft && (draft.kind === "not_needed" || draft.text.length));
+  const sendable = (draft) => Boolean(draft && (draft.kind === "not_needed" || draft.text.trim()));
+  function draftWarning() {
+    if (draftWarningShown) return;
+    draftWarningShown = true;
+    $("draft-warning").textContent = "下書きを保存できません";
+    $("draft-warning").hidden = false;
+  }
+  function loadDrafts() {
+    try {
+      for (let index = 0; index < localStorage.length; index++) {
+        const key = localStorage.key(index);
+        if (!key?.startsWith(draftPrefix())) continue;
+        try {
+          const draft = JSON.parse(localStorage.getItem(key));
+          if (["answer", "not_needed"].includes(draft?.kind) && typeof draft.text === "string" && hasDraft(draft)) drafts.set(key, draft);
+        } catch { draftWarning(); }
+      }
+    } catch { draftWarning(); }
+  }
+  function saveDraft(room, id, kind, text) {
+    const key = draftKey(room, id);
+    const draft = { kind, text, updated: new Date().toISOString() };
+    if (hasDraft(draft)) drafts.set(key, draft);
+    else drafts.delete(key);
+    try {
+      if (hasDraft(draft)) localStorage.setItem(key, JSON.stringify(draft));
+      else localStorage.removeItem(key);
+    } catch { draftWarning(); }
+    answerErrors.delete(key);
+    if (!submitting) { confirmation = null; renderConfirmation(); }
+    updateDraftUI();
+  }
+  function removeDraft(room, id) {
+    drafts.delete(draftKey(room, id));
+    try { localStorage.removeItem(draftKey(room, id)); } catch { draftWarning(); }
+  }
+  function draftCount(room) {
+    const prefix = draftPrefix() + encodeURIComponent(room) + ":";
+    return [...drafts.keys()].filter((key) => key.startsWith(prefix)).length;
+  }
+  function draftCountBadge(room) {
+    const badge = element("span", undefined, "badge pending");
+    badge.dataset.draftCount = room;
+    return badge;
+  }
+  function roomAnswers(room) {
+    return (questionGroups.find((group) => group.room === room)?.questions || [])
+      .filter((question) => question.state !== "withdrawn")
+      .flatMap((question) => {
+        const draft = drafts.get(draftKey(room, question.id));
+        return sendable(draft) ? [{ id: question.id, kind: draft.kind, text: draft.text }] : [];
+      });
+  }
+  function updateDraftUI() {
+    document.querySelectorAll("[data-draft-count]").forEach((node) => {
+      const count = draftCount(node.dataset.draftCount);
+      node.textContent = `未送信 ${count}`;
+      node.hidden = !count;
+    });
+    document.querySelectorAll(".question").forEach((card) => {
+      const key = draftKey(card.dataset.room, card.dataset.questionId);
+      card.querySelector(".draft-badge").hidden = !hasDraft(drafts.get(key));
+      const error = card.querySelector(".answer-error");
+      error.textContent = answerErrors.get(key) || "";
+      error.hidden = !error.textContent;
+    });
+    document.querySelectorAll(".answer-form button, .answer-form textarea, .withdrawn-draft button").forEach((node) => { node.disabled = submitting; });
+    document.querySelectorAll("[data-answer-send]").forEach((node) => {
+      node.disabled = submitting || !sendable(drafts.get(draftKey(node.dataset.room, node.dataset.answerSend)));
+    });
+    document.querySelectorAll("[data-room-send]").forEach((node) => {
+      const count = roomAnswers(node.dataset.roomSend).length;
+      node.textContent = `この部屋の回答を送信（${count} 件）`;
+      node.disabled = submitting || !count;
+    });
+  }
+  function roomSendButton(room) {
+    const node = button("", () => confirmAnswers(room, roomAnswers(room)));
+    node.dataset.roomSend = room;
+    return node;
+  }
+  function confirmAnswers(room, answers) {
+    if (submitting || !answers.length) return;
+    confirmation = { room, answers, fromQuestions: state().get("page") === "questions", error: "" };
+    renderConfirmation();
+    $("answer-confirmation").scrollIntoView({ block: "nearest" });
+  }
+  function renderConfirmation() {
+    const panel = $("answer-confirmation");
+    panel.replaceChildren();
+    panel.hidden = !confirmation;
+    if (!confirmation) return;
+    panel.append(element("h2", "回答の送信確認"), element("p", `部屋: ${confirmation.room}`), element("p", `${confirmation.answers.length} 件を送信します。`));
+    const list = element("ul");
+    for (const answer of confirmation.answers) list.append(element("li", `${answer.id} · ${answer.kind === "not_needed" ? "回答不要" : "回答"}`));
+    const send = button(submitting ? "送信中…" : "送信する", sendAnswers);
+    const cancel = button("やめる", () => { confirmation = null; renderConfirmation(); });
+    send.disabled = cancel.disabled = submitting;
+    const withdrawn = confirmation.answers.some((answer) => questionGroups.find((group) => group.room === confirmation.room)?.questions.some((question) => question.id === answer.id && question.state === "withdrawn"));
+    if (withdrawn) send.disabled = true;
+    const actions = element("div", undefined, "answer-actions");
+    actions.append(send, cancel);
+    panel.append(list, actions);
+    if (confirmation.error) panel.append(element("p", confirmation.error, "warning"));
+    if (withdrawn) panel.append(element("p", "取り下げた項目が含まれています。「やめる」で戻り、送信する回答を選び直してください。", "warning"));
+  }
+  function redrawQuestions() {
+    if (renderedQuestionParams) renderQuestions(questionGroups, renderedQuestionParams, generation, renderedQuestionParams.get("page") !== "questions");
+  }
+  function replaceQuestionGroup(room, group) {
+    questionGroups = questionGroups.map((current) => current.room === room ? group : current);
+    redrawQuestions();
+  }
+  async function sendAnswers() {
+    if (submitting || !confirmation) return;
+    if (confirmation.answers.some((answer) => questionGroups.find((group) => group.room === confirmation.room)?.questions.some((question) => question.id === answer.id && question.state === "withdrawn"))) return;
+    const submission = confirmation;
+    const snapshots = submission.answers.map((answer) => drafts.get(draftKey(submission.room, answer.id)));
+    submitting = true;
+    submission.error = "";
+    submission.answers.forEach((answer) => answerErrors.delete(draftKey(submission.room, answer.id)));
+    renderConfirmation();
+    updateDraftUI();
+    try {
+      const response = await fetch("/api/answers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Workroom-Token": document.querySelector('meta[name="workroom-token"]').content },
+        body: JSON.stringify({ room: submission.room, answers: submission.answers })
+      });
+      const data = await response.json();
+      if (response.status === 200) {
+        for (const id of data.sent) {
+          const index = submission.answers.findIndex((answer) => answer.id === id);
+          // 待っている間に新しい下書きができていたら、その入力は残す。
+          if (index >= 0 && drafts.get(draftKey(submission.room, id)) === snapshots[index]) removeDraft(submission.room, id);
+          answerErrors.delete(draftKey(submission.room, id));
+        }
+        confirmation = null;
+        addAnswerGuide(submission.room, data.sent, submission.fromQuestions);
+        invalidateRequest();
+        replaceQuestionGroup(submission.room, data.questions);
+        // 部屋の状態・件数・「未回答あり」の条件も取り直す。
+        await refresh();
+      } else {
+        let message = typeof data.error === "string" ? data.error : `回答を送信できません（HTTP ${response.status}）`;
+        if (response.status === 403) message += "。ハブを再起動した場合は、ページを再読み込みしてください";
+        submission.error = data.id ? `${data.id}: ${message}` : message;
+        if (data.id) answerErrors.set(draftKey(submission.room, data.id), submission.error);
+        if (response.status === 409) {
+          invalidateRequest();
+          // 409 の情報を先に反映し、再取得に失敗しても取り下げた項目は送れなくする。
+          const group = questionGroups.find((current) => current.room === submission.room);
+          const question = group?.questions.find((current) => current.id === data.id);
+          if (question) {
+            question.state = "withdrawn";
+            question.withdrawals.push({ reason: data.reason || message, successor: data.successor });
+            redrawQuestions();
+          }
+          try {
+            const current = await fetch("/api/questions?" + new URLSearchParams({ room: submission.room }), { cache: "no-store" });
+            if (!current.ok) throw new Error();
+            replaceQuestionGroup(submission.room, await current.json());
+          } catch { submission.error += "。確認事項を再取得できません。⟳ で更新してください"; }
+          await refresh();
+        }
+      }
+    } catch {
+      submission.error = "回答の送信結果を確認できません。ネットワーク接続を確認し、⟳ で回答の状態を確認してください。下書きは残しています。";
+    } finally {
+      submitting = false;
+      renderConfirmation();
+      updateDraftUI();
+    }
+  }
+  function addAnswerGuide(room, ids, fromQuestions) {
+    const guide = element("section", undefined, "answer-guide");
+    const text = `確認事項に回答しました（${ids.join(", ")}）。workroom q pending を読んで反映してください。${fromQuestions ? `（部屋: ${room}）` : ""}`;
+    const message = element("pre", text);
+    const status = element("p", "", "muted");
+    const copy = button("コピー", async () => {
+      try { await navigator.clipboard.writeText(text); status.textContent = "コピーしました"; }
+      catch {
+        const range = document.createRange();
+        range.selectNodeContents(message);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        status.textContent = "Ctrl+C でコピーしてください";
+      }
+    });
+    const actions = element("div", undefined, "answer-actions");
+    actions.append(copy, button("閉じる", () => guide.remove()));
+    guide.append(element("h2", "エージェントへの貼り付け用"), message, actions, status);
+    $("answer-guides").append(guide);
+  }
+  function answerForm(question, room) {
+    const draft = drafts.get(draftKey(room, question.id));
+    const form = element("div", undefined, "answer-form");
+    const textarea = element("textarea");
+    textarea.rows = 4;
+    textarea.dataset.answerId = question.id;
+    textarea.dataset.room = room;
+    textarea.value = draft?.text || "";
+    let kind = draft?.kind || "answer";
+    const label = element("label");
+    const labelText = element("span");
+    label.append(labelText, textarea);
+    const toggle = button("回答不要", () => {
+      kind = kind === "not_needed" ? "answer" : "not_needed";
+      saveDraft(room, question.id, kind, textarea.value);
+      updateKind();
+    });
+    function updateKind() {
+      labelText.textContent = kind === "not_needed" ? "回答不要の理由（省略可）" : "回答";
+      toggle.setAttribute("aria-pressed", String(kind === "not_needed"));
+      form.classList.toggle("not-needed", kind === "not_needed");
+    }
+    textarea.addEventListener("input", () => saveDraft(room, question.id, kind, textarea.value));
+    textarea.addEventListener("compositionstart", () => { composingAnswer = true; });
+    textarea.addEventListener("compositionend", () => {
+      composingAnswer = false;
+      saveDraft(room, question.id, kind, textarea.value);
+      if (deferredQuestionRender) {
+        const args = deferredQuestionRender;
+        deferredQuestionRender = null;
+        if (args[2] === generation) renderQuestions(...args);
+      }
+    });
+    const choices = element("ul", undefined, "answer-choices");
+    const info = ask(question);
+    (info.choices || []).forEach((choice, index) => {
+      const line = element("li");
+      const insert = button("入れる", () => {
+        const start = textarea.selectionStart;
+        textarea.setRangeText(choice, start, textarea.selectionEnd, "end");
+        saveDraft(room, question.id, kind, textarea.value);
+        textarea.focus({ preventScroll: true });
+      });
+      insert.setAttribute("aria-label", `選択肢 ${index + 1} を入れる`);
+      line.append(element("span", choice + (info.recommend === index + 1 ? "（推奨）" : "")), insert);
+      choices.append(line);
+    });
+    const send = button("この回答だけ送信", () => {
+      const current = drafts.get(draftKey(room, question.id));
+      if (sendable(current)) confirmAnswers(room, [{ id: question.id, kind: current.kind, text: current.text }]);
+    });
+    send.dataset.answerSend = question.id;
+    send.dataset.room = room;
+    const actions = element("div", undefined, "answer-actions");
+    actions.append(toggle, send);
+    form.append(choices, label, actions);
+    updateKind();
+    return form;
+  }
+  function withdrawnDraft(question, room) {
+    const draft = drafts.get(draftKey(room, question.id));
+    if (!hasDraft(draft)) return null;
+    const panel = element("div", undefined, "withdrawn-draft");
+    panel.append(element("p", "取り下げられました。下書きは送信されていません。", "warning"), element("p", draft.kind === "not_needed" ? "下書き: 回答不要" : "下書き: 回答"), element("pre", draft.text));
+    const successor = question.withdrawals.at(-1)?.successor;
+    if (successor) panel.append(button("後継に写す", () => {
+      const previous = drafts.get(draftKey(room, successor));
+      const text = [previous?.text, draft.text].filter(Boolean).join("\n\n");
+      saveDraft(room, successor, previous?.kind || draft.kind, text);
+      redrawQuestions();
+    }));
+    panel.append(button("下書きを捨てる", () => {
+      saveDraft(room, question.id, "answer", "");
+      redrawQuestions();
+    }));
+    return panel;
+  }
   function selectQuestion(room, id) {
     const values = { room, q: id };
     if (state().get("room") !== room) { values.file = ""; values.tab = ""; }
@@ -279,8 +565,9 @@
     if (showRoom) card.append(button(room, () => selectQuestion(room, question.id), selected));
     const heading = element("h3");
     heading.append(button(`${question.id} · ${labels[question.state] || question.state}`, () => selectQuestion(room, question.id), selected));
+    heading.append(element("span", "未送信", "badge pending draft-badge"));
     card.append(heading);
-    if (showRoom) card.append(questionLink(room, question.id, "部屋のページで開く", true));
+    if (params.get("page") === "questions") card.append(questionLink(room, question.id, "部屋のページで開く", true));
     card.append(element("p", info.question || "質問なし", "question-text"));
     if (!question.ask) card.append(element("p", "質問なし（写しから表示）", "warning"));
     const at = question.ask?.at || info.asked_at;
@@ -291,7 +578,7 @@
       card.append(origin);
     }
     if (info.background) card.append(element("pre", info.background));
-    if (info.choices?.length) {
+    if (question.state === "withdrawn" && info.choices?.length) {
       const choices = element("ol");
       info.choices.forEach((choice, index) => choices.append(element("li", choice + (info.recommend === index + 1 ? "（推奨）" : ""))));
       card.append(choices);
@@ -317,6 +604,23 @@
       }
       if (question.answers.length) card.append(element("p", "取り下げた項目への回答を記録として表示しています。", "muted"));
     }
+    if (question.state === "withdrawn") {
+      const draft = withdrawnDraft(question, room);
+      if (draft) card.append(draft);
+    } else if (question.state === "resolved") {
+      const details = element("details", undefined, "additional-answer");
+      const key = draftKey(room, question.id);
+      details.open = additionalAnswersOpen.has(key) || hasDraft(drafts.get(key));
+      details.append(element("summary", "追加で回答する"), answerForm(question, room));
+      details.addEventListener("toggle", () => {
+        if (details.open) additionalAnswersOpen.add(key);
+        else additionalAnswersOpen.delete(key);
+      });
+      card.append(details);
+    } else card.append(answerForm(question, room));
+    const error = element("p", "", "warning answer-error");
+    error.setAttribute("role", "status");
+    card.append(error);
     return card;
   }
   async function textPreview(response, parent, ticket) {
@@ -497,11 +801,29 @@
     return states.includes(question.state) && questionSearchText(question, room).includes(qq.toLocaleLowerCase());
   }
   function renderQuestions(groups, params, ticket, roomPage) {
+    const selectedGroup = groups.find((group) => group.room === params.get("room"));
+    const selected = selectedGroup?.questions.find((question) => question.id === params.get("q"));
+    // IME の変換中は DOM を差し替えず、確定後に最新の描画だけを行う。
+    if (composingAnswer) {
+      deferredQuestionRender = [groups, params, ticket, roomPage];
+      return selected;
+    }
+    questionGroups = groups;
+    renderedQuestionParams = params;
     const body = $("question-list");
+    const active = document.activeElement;
+    const focused = active?.matches("textarea[data-answer-id]") ? {
+      room: active.dataset.room, id: active.dataset.answerId,
+      start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection,
+      top: active.scrollTop, left: active.scrollLeft
+    } : null;
+    const scrollTop = $("question-content").scrollTop;
+    body.replaceChildren();
     const items = groups.flatMap((group) => group.questions
-      .filter((question) => matchesQuestion(question, group.room, params))
+      .filter((question) => matchesQuestion(question, group.room, params) || (question.state === "withdrawn" && hasDraft(drafts.get(draftKey(group.room, question.id)))))
       .map((question) => ({ room: group.room, question })));
-    $("question-summary").textContent = `${items.length} 件`;
+    const matchedCount = items.filter(({ room, question }) => matchesQuestion(question, room, params)).length;
+    $("question-summary").textContent = `${matchedCount} 件${items.length > matchedCount ? ` · 取り下げた下書き ${items.length - matchedCount}` : ""}`;
     const newOrder = !roomPage && params.get("qsort") === "new";
     if (newOrder) {
       for (const group of groups) {
@@ -513,17 +835,20 @@
     } else {
       for (const group of groups) {
         const questions = items.filter((item) => item.room === group.room);
-        if (!roomPage && (questions.length || group.error || group.warnings?.length)) body.append(element("h2", group.room));
+        if (roomPage || questions.length || group.error || group.warnings?.length || draftCount(group.room)) {
+          const header = element("div", undefined, "question-room-heading");
+          if (!roomPage) header.append(element("h2", group.room));
+          header.append(draftCountBadge(group.room), roomSendButton(group.room));
+          body.append(header);
+        }
         warnings(body, group);
-        for (const { question, room } of questions) body.append(questionCard(question, room, params, !roomPage));
+        for (const { question, room } of questions) body.append(questionCard(question, room, params));
       }
     }
-    if (!items.length) body.append(element("p", "条件に合う確認事項はありません。", "muted"));
+    if (!matchedCount) body.append(element("p", "条件に合う確認事項はありません。", "muted"));
     // ブックマークや後継リンクの対象は、確認事項の条件外でも読めるようにする。
-    const selectedGroup = groups.find((group) => group.room === params.get("room"));
-    const selected = selectedGroup?.questions.find((question) => question.id === params.get("q"));
     if (selected && !items.some((item) => item.room === selectedGroup.room && item.question.id === selected.id)) {
-      body.append(element("h2", "選択中の確認事項（条件外・件数に含めません）"), questionCard(selected, selectedGroup.room, params, !roomPage));
+      body.append(element("h2", "選択中の確認事項（条件外・件数に含めません）"), questionCard(selected, selectedGroup.room, params, newOrder));
     } else if (params.get("q") && !selected) {
       body.append(element("p", "選択した確認事項は見つかりません。部屋の条件や同期状態を確認してください。", "muted"));
     }
@@ -537,10 +862,26 @@
         });
       }
     }
+    updateDraftUI();
+    renderConfirmation();
+    let restored = false;
+    if (focused) {
+      const textarea = [...body.querySelectorAll("textarea[data-answer-id]")].find((node) => node.dataset.room === focused.room && node.dataset.answerId === focused.id);
+      if (textarea) {
+        const details = textarea.closest("details");
+        if (details) details.open = true;
+        textarea.focus({ preventScroll: true });
+        textarea.setSelectionRange(focused.start, focused.end, focused.direction);
+        textarea.scrollTop = focused.top;
+        textarea.scrollLeft = focused.left;
+        restored = true;
+      }
+    }
+    $("question-content").scrollTop = scrollTop;
     if (selected) {
       // 明示的に選んだカードを、保存された開閉状態より優先して見せる。
       if (collapsedPane === "questions") setCollapsedPane("");
-      body.querySelector(".selected-question")?.scrollIntoView({ block: "nearest" });
+      if (!restored) body.querySelector(".selected-question")?.scrollIntoView({ block: "nearest" });
     }
     return selected;
   }
@@ -561,7 +902,6 @@
     $("filter-summary").textContent = "…";
     $("question-summary").textContent = "…";
     content.replaceChildren();
-    $("question-list").replaceChildren();
     syncFilters(params);
     syncQuestionFilters(params);
     const page = params.get("page") || "rooms";
@@ -591,11 +931,13 @@
         status.append(element("span", room.state, statusClass(room.state)));
         if (room.unanswered) status.append(element("span", `● ${room.unanswered}`, "badge unanswered"));
         if (room.pending) status.append(element("span", `◆ ${room.pending}`, "badge pending"));
+        status.append(draftCountBadge(room.room));
         row.append(status);
         if (room.status) row.append(element("span", "status: " + room.status, "room-desc"));
         if (room.modified) row.append(element("span", "最終更新 " + new Date(room.modified * 1000).toLocaleString(), "room-desc"));
         $("rooms").append(row);
       }
+      updateDraftUI();
       if (page === "rooms") {
         if (selected) {
           await Promise.all([
@@ -606,6 +948,7 @@
             })()
           ]);
         } else {
+          renderQuestions([], params, ticket, true);
           $("question-summary").textContent = "0 件";
           $("question-list").append(element("p", "該当する部屋はありません。部屋の条件を変えてください。", "muted"));
           content.append(element("p", "該当する部屋はありません。部屋の条件を変えてください。", "muted"));
@@ -705,7 +1048,9 @@
     printDetails.forEach((details) => { details.open = true; });
   });
   window.addEventListener("afterprint", () => printDetails.forEach((details) => { details.open = false; }));
-  api("/api/config").then((data) => {
+  Promise.all([api("/api/config"), api("/api/hello")]).then(([data, hello]) => {
+    rootHash = hello.root_hash;
+    loadDrafts();
     config = data;
     $("root").title = "作業ルート: " + data.root;
     const params = normalizeHash();

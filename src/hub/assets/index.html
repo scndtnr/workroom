@@ -73,7 +73,12 @@
               <button id="clear-question-filters" type="button" title="対応待ち・検索なし・部屋ごとに戻します">クリア</button>
               <span id="question-summary" aria-live="polite">0 件</span>
             </form>
-            <div id="question-list" class="content-body"></div>
+            <div id="question-content" class="content-body">
+              <p id="draft-warning" class="warning" role="status" hidden></p>
+              <section id="answer-confirmation" class="answer-confirmation" aria-label="回答の送信確認" aria-live="polite" hidden></section>
+              <div id="answer-guides" aria-live="polite"></div>
+              <div id="question-list"></div>
+            </div>
           </div>
         </section>
         <section id="files-pane" class="workspace-pane" aria-label="ファイル">
