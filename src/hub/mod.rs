@@ -1,4 +1,4 @@
-//! ディスクに何も生成しない、読み取り専用のローカル成果物ハブ。
+//! 成果物を読み、確認事項への回答だけを追記するローカル成果物ハブ。
 
 mod http;
 mod listing;
@@ -9,8 +9,10 @@ mod routes;
 use crate::{config::Settings, shell};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
+use std::collections::hash_map::RandomState;
 use std::ffi::OsStr;
-use std::io::{Read, Write};
+use std::hash::BuildHasher;
+use std::io::{BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -29,8 +31,13 @@ pub struct State {
     pub settings: Settings,
     pub port: u16,
     pub root_hash: String,
+    pub token: String,
     pub initial: listing::Filter,
     pub cache: Mutex<listing::Cache>,
+}
+
+fn new_token() -> String {
+    format!("{:016x}{:016x}", RandomState::new().hash_one(0u8), RandomState::new().hash_one(1u8))
 }
 
 fn root_hash(settings: &Settings) -> Result<String> {
@@ -92,9 +99,10 @@ pub fn run(settings: Settings, options: Options) -> Result<()> {
         options.old,
         options.days.unwrap_or(settings.config.recent_days),
     );
-    let state = Arc::new(State { settings, port, root_hash: hash, initial, cache: Mutex::default() });
+    let state =
+        Arc::new(State { settings, port, root_hash: hash, token: new_token(), initial, cache: Mutex::default() });
     announce(port, options.no_open)?;
-    eprintln!("成果物ハブを起動しました。Ctrl+C で終了します（読むだけ）");
+    eprintln!("成果物ハブを起動しました。Ctrl+C で終了します");
     serve(listener, state)
 }
 
@@ -151,13 +159,24 @@ fn serve(listener: TcpListener, state: Arc<State>) -> Result<()> {
         let state = Arc::clone(&state);
         if let Err(error) = std::thread::Builder::new().name("workroom-hub".into()).spawn(move || {
             let _connection = connection;
-            let response = match http::read_request(&stream) {
-                Ok(request) => routes::handle(&state, &request),
+            let mut reader = BufReader::new(&stream);
+            let response = match http::read_head(&mut reader) {
+                Ok(mut request) => {
+                    // 本文の読み取りや書き込みの検査より先に Host を検査する。
+                    match routes::validate_host(&state, &request)
+                        .and_then(|()| http::read_body(&mut reader, &mut request))
+                    {
+                        Ok(()) => routes::handle(&state, &request),
+                        Err(status) => routes::request_error(&request, status),
+                    }
+                }
                 Err(status) => http::Response::error(status),
             };
             if let Err(error) = http::write_response(&mut stream, response) {
                 eprintln!("ハブの応答を送れません: {error}");
             }
+            // 本文を読まずに拒否した接続でも、応答の後に送信の終了を通知する。
+            let _ = stream.shutdown(std::net::Shutdown::Write);
         }) {
             eprintln!("ハブの処理を開始できません: {error}");
         }
@@ -177,6 +196,7 @@ fn test_state(root: &std::path::Path) -> State {
         },
         port: 49123,
         root_hash: "test-root".into(),
+        token: new_token(),
         initial: listing::Filter::from_cli(None, true, false, 14),
         cache: Mutex::default(),
     }
