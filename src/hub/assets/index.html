@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>workroom hub</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <button id="sidebar-toggle" type="button" aria-controls="rooms" aria-expanded="true" title="部屋の一覧を畳む" aria-label="部屋の一覧を畳む">◀</button>
+    <strong id="root" class="brand">workroom <span>hub</span></strong>
+    <nav aria-label="ページ">
+      <button type="button" data-page="rooms">部屋</button>
+      <button type="button" data-page="questions" title="上の条件で絞った部屋の確認事項">確認事項</button>
+      <button type="button" data-page="archive">アーカイブ</button>
+    </nav>
+    <form id="filters" aria-label="表示条件">
+      <div id="status-filter" class="segments" data-value="active" role="group" aria-label="部屋の状態" title="進行中は未完了、完了は .done のある部屋です">
+        <button type="button" value="active" aria-pressed="true" title="未完了の部屋">進行中</button><button type="button" value="done" aria-pressed="false" title=".done のある部屋">完了</button><button type="button" value="all" aria-pressed="false" title="完了を含むすべての部屋">すべて</button>
+      </div>
+      <div id="period-filter" class="period-controls" title="部屋名の日付で期間を絞ります。チェックを外すと期間を制限しません">
+        <label><input id="period" type="checkbox" checked>期間</label>
+        <div id="period-options" class="period-options">
+          <input id="days" type="number" step="1" aria-label="日数" title="日付の区切り時刻を考慮した今日からの日数"><span>日</span>
+          <div id="range-filter" class="segments" data-value="within" role="group" aria-label="期間の範囲" title="以内は今日 − N 日を含み、より前はその日を含みません">
+            <button type="button" value="within" aria-pressed="true">以内</button><button type="button" value="before" aria-pressed="false">より前</button>
+          </div>
+        </div>
+      </div>
+      <div class="search-controls">
+        <input id="query" type="search" aria-label="部屋名・説明を検索" title="部屋名と README の説明を検索します" placeholder="部屋名・説明">
+        <div id="scope-filter" class="segments" data-value="filtered" role="group" aria-label="検索の範囲" title="条件内は状態・期間で絞った中、全部屋はそれらを無視して検索します">
+          <button type="button" value="filtered" aria-pressed="true">条件内</button><button type="button" value="all" aria-pressed="false">全部屋</button>
+        </div>
+      </div>
+      <label title="未回答の確認事項がある部屋だけ表示します"><input id="unanswered" type="checkbox">未回答あり</label>
+      <select id="sort" aria-label="並び順" title="部屋の並び順"><option value="date">新しい順</option><option value="updated">更新順</option><option value="unanswered">未回答順</option></select>
+      <button id="clear-filters" type="button" title="起動時の初期条件に戻します">クリア</button>
+      <span id="filter-summary" aria-live="polite" title="件数と表示中の条件"></span>
+    </form>
+    <div class="hub-actions" role="group" aria-label="表示の操作">
+      <button id="reload" type="button" title="再読み込み" aria-label="再読み込み">⟳</button>
+      <button id="theme" type="button" title="配色を切り替える" aria-label="配色を切り替える">◐</button>
+    </div>
+    <p id="notice" role="status" aria-live="polite" hidden></p>
+  </header>
+  <main id="layout">
+    <aside id="rooms" aria-label="部屋の一覧"></aside>
+    <article id="content" aria-label="部屋・成果物・確認事項"></article>
+  </main>
+  <noscript>成果物ハブを表示するには JavaScript を有効にしてください。</noscript>
+</body>
+</html>

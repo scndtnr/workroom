@@ -7,7 +7,9 @@
 
 use anyhow::{Result, bail};
 use clap::ValueEnum;
+use std::ffi::OsStr;
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Shell {
@@ -46,8 +48,21 @@ pub fn write_cwd_file(cwd_file: Option<&Path>, dest: &Path, then: Option<&str>) 
 
 /// ファイラーで開く。TUI の画面を崩さないよう、起動したプログラムの出力は捨てる
 pub fn open_in_filer(path: &Path) -> Result<()> {
+    open_with_os(path.as_os_str())
+}
+
+/// パスや URL を OS の既定のアプリで開く。起動したプログラムの出力は捨てる。
+pub fn open_with_os(target: &OsStr) -> Result<()> {
     use anyhow::Context;
-    use std::process::{Command, Stdio};
+    let mut command = os_open_command(target);
+    // explorer は成功しても終了コード 1 を返すことがあるので、終了コードは見ない
+    command.spawn().with_context(|| {
+        format!("{} を起動できません: {}", command.get_program().to_string_lossy(), target.to_string_lossy())
+    })?;
+    Ok(())
+}
+
+fn os_open_command(target: &OsStr) -> Command {
     let program = if cfg!(windows) {
         "explorer"
     } else if cfg!(target_os = "macos") {
@@ -55,15 +70,9 @@ pub fn open_in_filer(path: &Path) -> Result<()> {
     } else {
         "xdg-open"
     };
-    // explorer は成功しても終了コード 1 を返すことがあるので、終了コードは見ない
-    Command::new(program)
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("{program} を起動できません: {}", path.display()))?;
-    Ok(())
+    let mut command = Command::new(program);
+    command.arg(target).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    command
 }
 
 pub fn validate_cmd_name(name: &str) -> Result<()> {
@@ -113,7 +122,7 @@ Register-ArgumentCompleter -Native -CommandName __CMD__ -ScriptBlock {
     $words = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.ToString() })
     if ($wordToComplete) { $words = @($words | Select-Object -SkipLast 1) }
     if ($words.Count -eq 0) {
-        $candidates = @('new', 'ls', 'grep', 'done', 'undone', 'open', 'root', 'import', 'rules', 'q', 'config')
+        $candidates = @('new', 'ls', 'hub', 'grep', 'done', 'undone', 'open', 'root', 'import', 'rules', 'q', 'config')
     } elseif ($words[0] -in @('done', 'undone', 'open') -and $words.Count -eq 1) {
         $__wr_exe = (Get-Command workroom -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
         if (-not $__wr_exe) { return }
@@ -169,6 +178,33 @@ __CMD__() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn os_opener_passes_paths_and_urls_as_one_literal_argument() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("作業 フォルダ").join("a&b.txt");
+        let url = OsStr::new("http://127.0.0.1:47100/?room=EXAMPLE%2F2026-11-03&theme=dark#file");
+        for target in [path.as_os_str(), url] {
+            let command = os_open_command(target);
+            let program = if cfg!(windows) {
+                "explorer"
+            } else if cfg!(target_os = "macos") {
+                "open"
+            } else {
+                "xdg-open"
+            };
+            assert_eq!(command.get_program(), OsStr::new(program));
+            assert_eq!(command.get_args().collect::<Vec<_>>(), vec![target]);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn os_opener_preserves_non_utf8_paths() {
+        use std::os::unix::ffi::OsStrExt;
+        let target = OsStr::from_bytes(b"/tmp/workroom-\xff");
+        assert_eq!(os_open_command(target).get_args().collect::<Vec<_>>(), vec![target]);
+    }
 
     #[test]
     fn cmd_name_is_substituted() {

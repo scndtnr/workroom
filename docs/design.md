@@ -76,6 +76,7 @@ Git 管理するほどでもない調査・作業の場所を、すぐに作れ�
 | `wk new <名前\|案件/名前> [説明] [-p 案件] [--date D] [-c\|-x]` | 作成して移動する。既にあれば移動のみ。`-c` で claude、`-x` で codex を起動 |
 | `wk new -p 案件 [--date D] [-c\|-x]` | 案件に絞った TUI を開く。選んで移動するか、「+ 新規作成」で案件の下に作る |
 | `wk ls [検索語] [-a\|-o] [--days N] [--depth N]` | tree 表示。既定は直近 N 日で進行中のもののみ。`-a` で全件、`-o` で直近 N 日より前の未完了のもの |
+| `wk hub [検索語] [-a\|-o] [--days N] [--port N] [--no-open]` | 成果物と確認事項をブラウザで読む。絞り込みは `ls` と同じ |
 | `wk grep <pattern> [rg のオプション...]` | 中身の横断検索。rg があれば rg、なければ内蔵の簡易検索 |
 | `wk done` / `wk undone [名前]` | 完了マーカーを付ける・外す（名前を省くとカレントの部屋） |
 | `wk open [名前]` / `wk root` | ファイラーで開く / ルートへ移動 |
@@ -94,7 +95,7 @@ Git 管理するほどでもない調査・作業の場所を、すぐに作れ�
 ## 確認事項（QUESTIONS.jsonl / ANSWERS.jsonl）
 
 ユーザーへの質問を ID 付きで起票し、回答の反映と取り下げを記録する。エージェントのシェルにラッパー関数がない場合もあるため、テンプレートと実行例では `workroom q` と書く。`wk q` でも実行できる。
-解析・状態の判定・追記・ロック・採番は `src/questions.rs` にまとめる。将来の成果物ハブもこのモデルを読む。ハブ自体と回答の書き込みはまだ実装しない。
+解析・状態の判定・追記・ロック・採番は `src/questions.rs` にまとめる。成果物ハブもこのモデルを読む。ハブからの回答の書き込みはまだ実装しない。
 
 ### ファイルとスキーマ
 
@@ -168,6 +169,78 @@ ID は `Q-YYYYMMDD-NN`。日付は `room::today(settings)`（`day_start_hour` �
 
 成功は終了コード 0（未反映があっても 0）、実行時エラーは 1、引数の誤りは clap の 2。移動やエージェントの起動は行わず、`--cwd-file` に書かない。
 
+## 成果物ハブ
+
+部屋を横断して、成果物と確認事項をブラウザの1タブで読む。LLM は使わない。PR2 は読み取りだけで、GET で作業ルート・設定・状態ディレクトリに何も作らず、`--cwd-file` にも書かない。静的ファイルは `include_str!` で埋め込み、一覧とキャッシュはメモリにだけ持つ。
+
+### 起動と HTTP
+
+- コマンドは `hub` の1つ。画面と API の絞り込みはハブ側で組み立て、`wk ls` の挙動は変えない。CLI は次の初期条件に対応し、「クリア」でその起動時の条件に戻る。
+
+  | CLI | 状態 | 期間 | 検索範囲 |
+  |---|---|---|---|
+  | 既定 | 進行中 | `recent_days` 日以内 | 条件内 |
+  | `-a` | すべて | なし | 条件内 |
+  | `-o` | 進行中 | N 日より前 | 条件内 |
+  | 検索語あり | 他の引数の設定を保持 | 他の引数の設定を保持 | 全部屋（状態・期間を無視し、CLI は ls と同じ結果） |
+
+  `--days N` は日数を上書きする。日付は部屋名を基準とし、`day_start_hour` を考慮した `room::today` から N 日を引く。以内は境界日を含み、より前は含まない。
+- 待ち受けは `127.0.0.1` だけ。ポートは `--port`、なければ設定 `hub_port`（既定 47100）。0 は OS に選ばせる。Host と CSP には `listener.local_addr()` の実際のポートを使う。
+- 標準出力の1行目は `http://127.0.0.1:<port>/` だけで、すぐ flush する。案内は標準エラー。既定では OS のブラウザを開き、`--no-open` で抑止する。終了は `Ctrl+C`。
+- ポートが使用中なら、2秒のタイムアウトで `/api/hello` を照会する。同じ作業ルートのハブなら URL を表示して開き、終了する。異なるルートや別のサーバなら `--port` を案内してエラーにする。hello はアプリ名と正規化したルートの SHA-256 だけを返す。
+- 標準ライブラリの `TcpListener` で接続ごとにスレッドを作る。同時32接続までで、超過は503。読み取り10秒・書き込み60秒、要求行を含むヘッダは16 KiB、宣言された本文は1 MiBまで（431 / 413）。本文を使う経路はなく、GET 以外は405。Transfer-Encoding と重複した Content-Length は受け付けない。
+- 応答は HTTP/1.1・`Connection: close`・Content-Length 付き。ファイルはメタデータの長さを上限に `io::copy` で流す。Range・keep-alive・chunked・TLS は持たない。要求ログは出さず、エラーだけを標準エラーに出す。
+
+### URL と読み取り API
+
+| URL | 内容 |
+|---|---|
+| `/`、`/assets/app.js`、`/assets/app.css` | 埋め込んだ画面 |
+| `/api/hello` | `app: "workroom"` と `root_hash` |
+| `/api/config` | 表示用の作業ルートと起動時の絞り込み |
+| `/api/rooms?q=&status=active\|done\|all&period=0\|1&days=N&range=within\|before&scope=filtered\|all&sort=date\|updated\|unanswered&unanswered=0\|1` | 部屋・説明・状態・件数・README の status・最終更新・警告、条件の要約 |
+| `/api/files?room=<ラベル>` | 成果物の `main` とその他の `other`。各区分の `items` と `omitted` |
+| `/api/questions?room=<ラベル>` | `room`・`questions`・`warnings`（`q show --all --json` と同じモデル）、読み取りエラーと旧形式のファイル名 |
+| `/api/questions/all` | 絞り込んだ範囲の部屋ごとの確認事項。rooms と同じ絞り込みの引数を受ける |
+| `/f/<部屋のラベル>/<パス>` | 部屋のファイル。例：`/f/EXAMPLE/2026-11-03-調査/docs/report.md` |
+
+room は部分一致を使わない。URL を `/` で区切ってから各要素を1回だけパーセントデコードし、不正な UTF-8 は400にする。空・ドットで始まる名前・`..`・区切り文字・バックスラッシュ・コロン・制御文字・末尾のドットや空白・Windows の予約名は404。
+`room::locate` で `scan` と同じ部屋・案件階層を判定し、README は読まない。案件名は `validate_project` に通さず、手作りの案件も受け入れる。部屋と対象ファイルを canonicalize し、部屋の外を指すシンボリックリンク等は404にする。README と JSONL の読み取りでも部屋の外を指すものを拒否する。
+
+### 表示・キャッシュ
+
+- 絞り込みは、部屋の状態（進行中・完了・すべて）、期間の有無と日数・以内／より前、検索語と検索範囲（条件内・全部屋）の独立した条件にする。完了は `.done` のある部屋。条件内の検索語は状態・期間の条件に追加して部屋名と説明を絞り、全部屋は完了を含むすべての部屋から検索する。全部屋検索中は状態・期間の欄をグレーにして無効化する。期間なしでは日数と範囲だけを無効化する。未回答ありと並び順は別に指定できる。
+- ヘッダには小さな切り替え・チェック・入力、クリア、件数と条件の要約を並べ、各欄の title に短い説明を付ける。切り替え・select・checkbox は即時、検索語・日数は入力停止から300ms後、Enter は即時反映する。連番と AbortController で古い応答を無視し、全条件を URL のハッシュにも保存する。
+- 状態は `.done`、未回答あり、未反映あり、README の `- status:`（先頭10行）の順に表示し、未回答・未反映の件数は別に出す。`status` がなければ「不明」。最終更新は README・QUESTIONS・ANSWERS の mtime の最大値。
+- 部屋ごとにパス・mtime・サイズで README の先頭と `questions::read` の結果をキャッシュする。読み取りの失敗はキャッシュしない。ディレクトリ一覧・README のメタデータ・`.done`・絞り込み・日付が変わらなければ、選択結果も再利用する。条件内・期間あり・以内なら `room::scan` に since を渡し、古い部屋の README を読む前に除外する。選択結果を作り直す際には scan が対象範囲の README を再読する。
+- 成果物一覧はファイルの中身を読まず、`fsinfo::entries` に区分ごとに深さ4・総件数500を渡す。深さ内の省略件数も返す。`exclude` とドットで始まる名前を各階層で除き、区分を分ける除外は起点直下だけに適用する。リンク先は再帰しない。`disk_usage` は呼ばない。
+- 主な表示は `outputs/`・`docs/`・`artifacts/`・`out/` と直下の成果物。README・AGENTS・QUESTIONS.jsonl・ANSWERS.jsonl と `log.md` はその他に置き、`interim/`・`sources/`・`scripts/`・`logs/`・`tmp/` などもその他にする。新旧の構成は混在してよい。README がない部屋はファイル一覧を表示する。
+- 成果物タブのファイル列には主な表示と、既定で畳んだ「その他のファイル」のグループを並べる。どちらも選択すれば同じ領域でプレビューでき、その他のファイルを選択した状態ではそのグループを開いておく。ファイル列そのものも畳め、部屋の一覧と別の localStorage キーで開閉を保存する。畳むとプレビューが空いた幅を使う。旧 `tab=other` の URL も成果物タブで開く。
+- 旧形式の `QUESTIONS.md`・`確認事項.md` は解析せず、「旧形式」として Markdown を表示する。
+- 素の JavaScript を使い、エージェント由来の文はすべて `textContent` で入れる。HTML はハブの DOM に入れず iframe で表示する。URL のハッシュに部屋・タブ・ファイル・絞り込みを残す。再取得は移動・⟳・`visibilitychange` で行い、定期取得はしない。
+- 「確認事項（条件内の部屋）」は、上の部屋の条件で絞った部屋について、未回答と折りたたんだ未反映を表示する。部屋の「すべて」と横断アーカイブには質問・背景・選択肢・起票者・日時・全回答・反映先・会話の要旨・取り下げの理由と後継を出す。質問なしは回答の写しを使い、取り下げの前後は断定しない。アーカイブは ID の日付の新しい順で、部屋・状態・検索語で絞り込める。印刷用 CSS も持つ。
+- 配色は `prefers-color-scheme` と手動切り替えに対応し、手動の選択だけ localStorage に保存する。Markdown には `?theme=dark|light` で渡す。テキストのプレビューは先頭1 MiBまで。
+
+### セキュリティと種類ごとの応答
+
+全要求で Host が `127.0.0.1:<port>` または `localhost:<port>` と一致することを検査し、欠落・重複・不一致は421。全応答に `nosniff` と `Cache-Control: no-store` を付ける。API と assets は `Cross-Origin-Resource-Policy: same-origin`。CORS ヘッダは返さない。
+ハブ本体の CSP は default-src を none とし、script・style・connect・frame は self、画像は self と data、base-uri・form-action・frame-ancestors は none にする。
+
+| 種類 | Content-Type と CSP |
+|---|---|
+| 描画した Markdown | HTML。sandbox にポップアップだけを許可し、default-src は none。style-src は埋め込んだ CSS の SHA-256、img-src は実際のループバック URL と data。frame-ancestors は同じハブだけ |
+| HTML | `text/html`。sandbox で scripts・forms・modals・popups を許可し、frame-ancestors はハブだけ。CDN 等の取得先は制限しない |
+| SVG・画像・テキスト | 対応する image 型または `text/plain; charset=utf-8`、CSP は sandbox |
+| PDF | `application/pdf` と nosniff。暫定の案Aとして CSP・iframe に sandbox を付けず、frame-ancestors はハブだけ。ブラウザでの確定は PR4 |
+| その他 | `application/octet-stream` と attachment、CSP は sandbox |
+
+sandbox は応答ヘッダにも付けるので、「別タブで開く」でも効く。`allow-same-origin` は付けない。部屋のファイルには CORP を付けず、不透明なオリジンの Markdown や HTML から画像を表示できるようにする。
+Markdown は表・取り消し線・タスクリスト・脚注に対応する。生の HTML はエスケープし、リンク・画像は相対・アンカー・http・https・mailto だけにする。外部リンクは別タブで開き、noopener noreferrer を付ける。`?raw=1` または2 MiB超はプレーンテキスト。UTF-8 の不正は置換文字と案内を出す。
+md.css は sandbox からの CORP 制限を避けるため文書内の style に埋め込み、SHA-256 を CSP に入れる。
+
+HTTP はローカル専用で必要な機能が少ないため、標準ライブラリで実装し依存を増やさない。Markdown は pulldown-cmark（default-features を無効、html だけ）を使い、サーバ側の無害化を Rust の単体テストで固定する。同梱 JavaScript ライブラリの更新やライセンス管理も不要になる。
+PR3 で回答の送信・起動ごとのトークン・Origin / Content-Type / Sec-Fetch-Site 検査を加える。PR2 には POST の経路もトークンの埋め込みも作らない。OS で開く API とボタンは PR4。
+
 ## TUI ピッカー（try-rs を参考に）
 
 ```
@@ -229,6 +302,7 @@ Enter 移動  ^D 完了  ^O 開く  ^S 並び順  Tab 完了済み  Alt+P 詳細
 root = '~/workroom'          # 作業ルート
 day_start_hour = 0           # 5 にすると 4:59 までは前日の日付で作成する
 recent_days = 14             # ls の既定の表示日数
+hub_port = 47100             # 成果物ハブのポート。0 なら OS が選ぶ
 icons = false                # Nerd Font のアイコン
 project_uppercase = false    # 案件名の英小文字を大文字にそろえる
 exclude = ["node_modules", ".venv", "__pycache__", ".git"]

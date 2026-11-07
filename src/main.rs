@@ -8,6 +8,7 @@ mod config;
 mod fsinfo;
 mod grep;
 mod history;
+mod hub;
 mod import;
 mod ls;
 mod questions;
@@ -69,6 +70,8 @@ enum Cmd {
     New(NewArgs),
     /// 部屋の一覧を tree 形式で表示する（既定は直近の進行中のもの）
     Ls(LsArgs),
+    /// 成果物と確認事項をブラウザで読む（Ctrl+C で終了）
+    Hub(HubArgs),
     /// 全部屋の中身を横断検索する（rg があれば rg を使う）
     Grep {
         /// 検索する正規表現
@@ -245,6 +248,28 @@ struct LsArgs {
 }
 
 #[derive(Args)]
+struct HubArgs {
+    /// 名前・説明で絞り込む（日数・完了の絞り込みより優先する）
+    #[arg(value_name = "検索語")]
+    query: Option<String>,
+    /// 全件を表示する
+    #[arg(short, long, conflicts_with = "old")]
+    all: bool,
+    /// 指定日数より前の未完了だけを表示する
+    #[arg(short, long)]
+    old: bool,
+    /// 表示する日数（既定は設定の recent_days）
+    #[arg(long, value_name = "N")]
+    days: Option<i64>,
+    /// 待ち受けるポート（0 なら OS が選ぶ。既定は設定の hub_port）
+    #[arg(long, value_name = "N")]
+    port: Option<u16>,
+    /// ブラウザを自動で開かない
+    #[arg(long)]
+    no_open: bool,
+}
+
+#[derive(Args)]
 struct NameArg {
     /// 部屋の名前（部分一致。省略するとカレントの部屋）
     #[arg(value_name = "名前")]
@@ -362,6 +387,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 &ls::LsArgs { query: a.query.as_deref(), all: a.all, old: a.old, days: a.days, depth: a.depth },
             )?;
         }
+        Cmd::Hub(a) => hub::run(
+            settings,
+            hub::Options { query: a.query, all: a.all, old: a.old, days: a.days, port: a.port, no_open: a.no_open },
+        )?,
         Cmd::Grep { pattern, rg_args } => {
             let code = grep::run(&settings, &pattern, &rg_args)?;
             return Ok(ExitCode::from(code.clamp(0, 255) as u8));
