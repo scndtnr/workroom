@@ -121,10 +121,15 @@ fn existing_hub(port: u16, hash: &str) -> bool {
 struct Connection(Arc<AtomicUsize>);
 
 fn try_connection(active: &Arc<AtomicUsize>) -> Option<Connection> {
-    active
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < 32).then_some(n + 1))
-        .ok()
-        .map(|_| Connection(Arc::clone(active)))
+    // fetch_update は新しい Rust で非推奨、後継の try_update は MSRV（1.88）にないため、自前で CAS を回す
+    let mut current = active.load(Ordering::Acquire);
+    while current < 32 {
+        match active.compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Some(Connection(Arc::clone(active))),
+            Err(actual) => current = actual,
+        }
+    }
+    None
 }
 
 impl Drop for Connection {
