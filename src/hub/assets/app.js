@@ -405,7 +405,7 @@
   async function showQuestions(params, ticket) {
     const archive = params.get("page") === "archive";
     const header = element("div", undefined, "page-header");
-    header.append(element("h1", archive ? "アーカイブ" : "確認事項（全部屋）"));
+    header.append(element("h1", archive ? "アーカイブ" : "確認事項（条件内の部屋）"));
     const body = element("div", undefined, "content-body");
     content.append(header, body);
     const data = await api("/api/questions/all?" + scope(params));
