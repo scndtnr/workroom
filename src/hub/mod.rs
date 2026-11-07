@@ -86,18 +86,12 @@ pub fn run(settings: Settings, options: Options) -> Result<()> {
         Err(error) => return Err(error).context("ハブの待ち受けを開始できません"),
     };
     let port = listener.local_addr()?.port();
-    let initial = listing::Filter {
-        query: options.query,
-        mode: if options.old {
-            "old"
-        } else if options.all {
-            "all"
-        } else {
-            "recent"
-        }
-        .into(),
-        days: options.days.unwrap_or(settings.config.recent_days),
-    };
+    let initial = listing::Filter::from_cli(
+        options.query,
+        options.all,
+        options.old,
+        options.days.unwrap_or(settings.config.recent_days),
+    );
     let state = Arc::new(State { settings, port, root_hash: hash, initial, cache: Mutex::default() });
     announce(port, options.no_open)?;
     eprintln!("成果物ハブを起動しました。Ctrl+C で終了します（読むだけ）");
@@ -178,7 +172,7 @@ fn test_state(root: &std::path::Path) -> State {
         },
         port: 49123,
         root_hash: "test-root".into(),
-        initial: listing::Filter { query: None, mode: "all".into(), days: 14 },
+        initial: listing::Filter::from_cli(None, true, false, 14),
         cache: Mutex::default(),
     }
 }

@@ -26,7 +26,7 @@ pub fn hub_url(port: u16, room: &str, file: &str) -> String {
     }
     let tab = if file.eq_ignore_ascii_case("README.md") { "overview" } else { "files" };
     format!(
-        "http://127.0.0.1:{port}/#page=rooms&room={}&tab={tab}&file={}&mode=all&q=&view=preview",
+        "http://127.0.0.1:{port}/#page=rooms&room={}&tab={tab}&file={}&status=all&period=0&scope=filtered&q=&view=preview",
         encode(room),
         encode(file)
     )
@@ -198,7 +198,7 @@ mod tests {
         let url = hub_url(49123, "EXAMPLE/2026-11-03-調査", "docs/報告 & a+1.md.txt");
         assert_eq!(
             url,
-            "http://127.0.0.1:49123/#page=rooms&room=EXAMPLE%2F2026-11-03-%E8%AA%BF%E6%9F%BB&tab=files&file=docs%2F%E5%A0%B1%E5%91%8A%20%26%20a%2B1.md.txt&mode=all&q=&view=preview"
+            "http://127.0.0.1:49123/#page=rooms&room=EXAMPLE%2F2026-11-03-%E8%AA%BF%E6%9F%BB&tab=files&file=docs%2F%E5%A0%B1%E5%91%8A%20%26%20a%2B1.md.txt&status=all&period=0&scope=filtered&q=&view=preview"
         );
         let output = render(b"# title", None, Some(&url));
         assert!(output.contains(&format!("href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\"", escape(&url))));

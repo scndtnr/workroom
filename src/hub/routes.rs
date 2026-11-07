@@ -34,27 +34,36 @@ fn json_response(value: Value) -> Response {
 }
 
 fn filter(state: &State, params: &Parameters) -> Result<listing::Filter, u16> {
+    fn choice<T: serde::de::DeserializeOwned>(params: &Parameters, key: &str, default: T) -> Result<T, u16> {
+        match params.get(key) {
+            Some(value) => serde_json::from_value(json!(value)).map_err(|_| 400),
+            None => Ok(default),
+        }
+    }
     let query =
         params.get("q").map(|q| (!q.is_empty()).then(|| q.clone())).unwrap_or_else(|| state.initial.query.clone());
-    let mode = params.get("mode").cloned().unwrap_or_else(|| state.initial.mode.clone());
-    if !matches!(mode.as_str(), "recent" | "all" | "old") {
-        return Err(400);
-    }
+    let status = choice(params, "status", state.initial.status)?;
+    let range = choice(params, "range", state.initial.range)?;
+    let scope = choice(params, "scope", state.initial.scope)?;
+    let period = match params.get("period").map(String::as_str) {
+        Some("1") => true,
+        Some("0") => false,
+        None => state.initial.period,
+        _ => return Err(400),
+    };
     let days = params
         .get("days")
         .map(|days| days.parse::<i64>().map_err(|_| 400u16))
         .transpose()?
         .unwrap_or(state.initial.days);
-    let delta = chrono::TimeDelta::try_days(days).ok_or(400u16)?;
-    if crate::room::today(&state.settings).checked_sub_signed(delta).is_none() {
-        return Err(400);
-    }
-    Ok(listing::Filter { query, mode, days })
+    let filter = listing::Filter { query, status, period, days, range, scope };
+    filter.cutoff(crate::room::today(&state.settings)).map_err(|_| 400u16)?;
+    Ok(filter)
 }
 
 fn summaries(state: &State, params: &Parameters) -> Result<(Vec<Value>, String), u16> {
     let filter = filter(state, params)?;
-    let (rooms, label) = listing::selected(state, &filter).map_err(|_| 500u16)?;
+    let (rooms, mut label) = listing::selected(state, &filter).map_err(|_| 500u16)?;
     let mut rooms: Vec<_> = rooms
         .iter()
         .filter(|room| paths::room_path(&state.settings.root, &room.label()).is_ok())
@@ -70,6 +79,7 @@ fn summaries(state: &State, params: &Parameters) -> Result<(Vec<Value>, String),
     }
     if params.get("unanswered").is_some_and(|v| v == "1") {
         rooms.retain(|room| room["unanswered"].as_u64().unwrap_or(0) > 0);
+        label.push_str(" · 未回答あり");
     }
     match params.get("sort").map(String::as_str).unwrap_or("date") {
         "date" => {}
@@ -323,8 +333,11 @@ mod tests {
         assert_eq!(handle(&state, &request("/f/2026-11-02-room/%2e%2e/a.md")).status, 404);
         assert_eq!(handle(&state, &request("/api/files?room=..%2F2026-11-02-room")).status, 404);
         for target in [
-            "/api/rooms?days=9223372036854775807",
-            "/api/rooms?mode=bad",
+            "/api/rooms?period=1&scope=filtered&days=9223372036854775807",
+            "/api/rooms?status=bad",
+            "/api/rooms?range=bad",
+            "/api/rooms?scope=bad",
+            "/api/rooms?period=bad",
             "/api/files",
             "/api/rooms?q=a&q=b",
             "/api/rooms?q=%ff",

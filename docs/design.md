@@ -175,7 +175,16 @@ ID は `Q-YYYYMMDD-NN`。日付は `room::today(settings)`（`day_start_hour` �
 
 ### 起動と HTTP
 
-- コマンドは `hub` の1つ。絞り込みは `ls::select_rooms` を共有する。既定は直近 `recent_days` 日の進行中で、検索語は日数・完了より優先する。
+- コマンドは `hub` の1つ。画面と API の絞り込みはハブ側で組み立て、`wk ls` の挙動は変えない。CLI は次の初期条件に対応し、「クリア」でその起動時の条件に戻る。
+
+  | CLI | 状態 | 期間 | 検索範囲 |
+  |---|---|---|---|
+  | 既定 | 進行中 | `recent_days` 日以内 | 条件内 |
+  | `-a` | すべて | なし | 条件内 |
+  | `-o` | 進行中 | N 日より前 | 条件内 |
+  | 検索語あり | 他の引数の設定を保持 | 他の引数の設定を保持 | 全部屋（状態・期間を無視し、CLI は ls と同じ結果） |
+
+  `--days N` は日数を上書きする。日付は部屋名を基準とし、`day_start_hour` を考慮した `room::today` から N 日を引く。以内は境界日を含み、より前は含まない。
 - 待ち受けは `127.0.0.1` だけ。ポートは `--port`、なければ設定 `hub_port`（既定 47100）。0 は OS に選ばせる。Host と CSP には `listener.local_addr()` の実際のポートを使う。
 - 標準出力の1行目は `http://127.0.0.1:<port>/` だけで、すぐ flush する。案内は標準エラー。既定では OS のブラウザを開き、`--no-open` で抑止する。終了は `Ctrl+C`。
 - ポートが使用中なら、2秒のタイムアウトで `/api/hello` を照会する。同じ作業ルートのハブなら URL を表示して開き、終了する。異なるルートや別のサーバなら `--port` を案内してエラーにする。hello はアプリ名と正規化したルートの SHA-256 だけを返す。
@@ -189,7 +198,7 @@ ID は `Q-YYYYMMDD-NN`。日付は `room::today(settings)`（`day_start_hour` �
 | `/`、`/assets/app.js`、`/assets/app.css` | 埋め込んだ画面 |
 | `/api/hello` | `app: "workroom"` と `root_hash` |
 | `/api/config` | 表示用の作業ルートと起動時の絞り込み |
-| `/api/rooms?q=&mode=recent\|all\|old&days=N&sort=date\|updated\|unanswered&unanswered=0\|1` | 部屋・説明・状態・件数・README の status・最終更新・警告 |
+| `/api/rooms?q=&status=active\|done\|all&period=0\|1&days=N&range=within\|before&scope=filtered\|all&sort=date\|updated\|unanswered&unanswered=0\|1` | 部屋・説明・状態・件数・README の status・最終更新・警告、条件の要約 |
 | `/api/files?room=<ラベル>` | 成果物の `main` とその他の `other`。各区分の `items` と `omitted` |
 | `/api/questions?room=<ラベル>` | `room`・`questions`・`warnings`（`q show --all --json` と同じモデル）、読み取りエラーと旧形式のファイル名 |
 | `/api/questions/all` | 絞り込んだ範囲の部屋ごとの確認事項。rooms と同じ絞り込みの引数を受ける |
@@ -200,10 +209,13 @@ room は部分一致を使わない。URL を `/` で区切ってから各要素
 
 ### 表示・キャッシュ
 
+- 絞り込みは、部屋の状態（進行中・完了・すべて）、期間の有無と日数・以内／より前、検索語と検索範囲（条件内・全部屋）の独立した条件にする。完了は `.done` のある部屋。条件内の検索語は状態・期間の条件に追加して部屋名と説明を絞り、全部屋は完了を含むすべての部屋から検索する。全部屋検索中は状態・期間の欄をグレーにして無効化する。期間なしでは日数と範囲だけを無効化する。未回答ありと並び順は別に指定できる。
+- ヘッダには小さな切り替え・チェック・入力、クリア、件数と条件の要約を並べ、各欄の title に短い説明を付ける。切り替え・select・checkbox は即時、検索語・日数は入力停止から300ms後、Enter は即時反映する。連番と AbortController で古い応答を無視し、全条件を URL のハッシュにも保存する。
 - 状態は `.done`、未回答あり、未反映あり、README の `- status:`（先頭10行）の順に表示し、未回答・未反映の件数は別に出す。`status` がなければ「不明」。最終更新は README・QUESTIONS・ANSWERS の mtime の最大値。
-- 部屋ごとにパス・mtime・サイズで README の先頭と `questions::read` の結果をキャッシュする。ディレクトリ一覧・README のメタデータ・`.done`・絞り込み・日付が変わらなければ、`select_rooms` の結果も再利用する。選択結果を作り直す際には既存の scan が範囲内の README を再読する。
+- 部屋ごとにパス・mtime・サイズで README の先頭と `questions::read` の結果をキャッシュする。読み取りの失敗はキャッシュしない。ディレクトリ一覧・README のメタデータ・`.done`・絞り込み・日付が変わらなければ、選択結果も再利用する。条件内・期間あり・以内なら `room::scan` に since を渡し、古い部屋の README を読む前に除外する。選択結果を作り直す際には scan が対象範囲の README を再読する。
 - 成果物一覧はファイルの中身を読まず、`fsinfo::entries` に区分ごとに深さ4・総件数500を渡す。深さ内の省略件数も返す。`exclude` とドットで始まる名前を各階層で除き、区分を分ける除外は起点直下だけに適用する。リンク先は再帰しない。`disk_usage` は呼ばない。
 - 主な表示は `outputs/`・`docs/`・`artifacts/`・`out/` と直下の成果物。README・AGENTS・QUESTIONS.jsonl・ANSWERS.jsonl と `log.md` はその他に置き、`interim/`・`sources/`・`scripts/`・`logs/`・`tmp/` などもその他にする。新旧の構成は混在してよい。README がない部屋はファイル一覧を表示する。
+- 成果物タブのファイル列には主な表示と、既定で畳んだ「その他のファイル」のグループを並べる。どちらも選択すれば同じ領域でプレビューでき、その他のファイルを選択した状態ではそのグループを開いておく。ファイル列そのものも畳め、部屋の一覧と別の localStorage キーで開閉を保存する。畳むとプレビューが空いた幅を使う。旧 `tab=other` の URL も成果物タブで開く。
 - 旧形式の `QUESTIONS.md`・`確認事項.md` は解析せず、「旧形式」として Markdown を表示する。
 - 素の JavaScript を使い、エージェント由来の文はすべて `textContent` で入れる。HTML はハブの DOM に入れず iframe で表示する。URL のハッシュに部屋・タブ・ファイル・絞り込みを残す。再取得は移動・⟳・`visibilitychange` で行い、定期取得はしない。
 - 「確認事項（全部屋）」は未回答と折りたたんだ未反映を表示する。部屋の「すべて」と横断アーカイブには質問・背景・選択肢・起票者・日時・全回答・反映先・会話の要旨・取り下げの理由と後継を出す。質問なしは回答の写しを使い、取り下げの前後は断定しない。アーカイブは ID の日付の新しい順で、部屋・状態・検索語で絞り込める。印刷用 CSS も持つ。

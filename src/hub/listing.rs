@@ -1,9 +1,9 @@
 //! 一覧・確認事項の読み取りと、ファイルの更新日時・サイズによるメモリ内キャッシュ。
 
 use super::{State, paths};
-use crate::{fsinfo, ls, questions, room};
+use crate::{fsinfo, questions, room};
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
@@ -12,11 +12,117 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Active,
+    Done,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DateRange {
+    Within,
+    Before,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchScope {
+    Filtered,
+    All,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Filter {
     pub query: Option<String>,
-    pub mode: String,
+    pub status: Status,
+    pub period: bool,
     pub days: i64,
+    pub range: DateRange,
+    pub scope: SearchScope,
+}
+
+impl Filter {
+    pub fn from_cli(query: Option<String>, all: bool, old: bool, days: i64) -> Self {
+        Self {
+            scope: if query.is_some() { SearchScope::All } else { SearchScope::Filtered },
+            query,
+            status: if all && !old { Status::All } else { Status::Active },
+            period: !all || old,
+            days,
+            range: if old { DateRange::Before } else { DateRange::Within },
+        }
+    }
+
+    pub fn cutoff(&self, today: chrono::NaiveDate) -> Result<Option<chrono::NaiveDate>> {
+        if self.scope == SearchScope::All || !self.period {
+            return Ok(None);
+        }
+        let delta = chrono::TimeDelta::try_days(self.days).ok_or_else(|| anyhow::anyhow!("日数が大きすぎます"))?;
+        Ok(Some(today.checked_sub_signed(delta).ok_or_else(|| anyhow::anyhow!("日数が大きすぎます"))?))
+    }
+
+    fn since(&self, today: chrono::NaiveDate) -> Result<Option<chrono::NaiveDate>> {
+        Ok(if self.range == DateRange::Within { self.cutoff(today)? } else { None })
+    }
+
+    fn retain(&self, rooms: &mut Vec<room::Room>, today: chrono::NaiveDate) -> Result<()> {
+        let cutoff = self.cutoff(today)?;
+        let query = self.query.as_ref().map(|q| q.to_lowercase());
+        rooms.retain(|room| {
+            let status_matches = self.scope == SearchScope::All
+                || match self.status {
+                    Status::Active => !room.done,
+                    Status::Done => room.done,
+                    Status::All => true,
+                };
+            let period_matches = cutoff.is_none_or(|date| match self.range {
+                DateRange::Within => room.date >= date,
+                DateRange::Before => room.date < date,
+            });
+            status_matches
+                && period_matches
+                && query.as_ref().is_none_or(|q| {
+                    room.label().to_lowercase().contains(q) || room.description.to_lowercase().contains(q)
+                })
+        });
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        let mut parts = if self.scope == SearchScope::All {
+            vec!["全部屋から検索".to_string()]
+        } else {
+            vec![
+                match self.status {
+                    Status::Active => "進行中",
+                    Status::Done => "完了",
+                    Status::All => "すべて",
+                }
+                .into(),
+                if self.period {
+                    format!(
+                        "{}日{}",
+                        self.days,
+                        match self.range {
+                            DateRange::Within => "以内",
+                            DateRange::Before => "より前",
+                        }
+                    )
+                } else {
+                    "期間なし".into()
+                },
+            ]
+        };
+        if let Some(query) = &self.query
+            && !query.is_empty()
+        {
+            parts.push(format!("「{query}」"));
+        }
+        parts.join(" · ")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,9 +193,8 @@ fn inventory(root: &Path) -> Inventory {
 }
 
 pub fn selected(state: &State, filter: &Filter) -> Result<(Vec<room::Room>, String)> {
-    let delta = chrono::TimeDelta::try_days(filter.days).ok_or_else(|| anyhow::anyhow!("日数が大きすぎます"))?;
     let today = room::today(&state.settings);
-    anyhow::ensure!(today.checked_sub_signed(delta).is_some(), "日数が大きすぎます");
+    let since = filter.since(today)?;
     let current = inventory(&state.settings.root);
     {
         let cache = state.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -101,15 +206,9 @@ pub fn selected(state: &State, filter: &Filter) -> Result<(Vec<room::Room>, Stri
             return Ok((selection.rooms.clone(), selection.label.clone()));
         }
     }
-    let (rooms, label) = ls::select_rooms(
-        &state.settings,
-        &ls::Filter {
-            query: filter.query.as_deref(),
-            all: filter.mode == "all",
-            old: filter.mode == "old",
-            days: Some(filter.days),
-        },
-    )?;
+    let mut rooms = room::scan(&state.settings.root, since)?;
+    filter.retain(&mut rooms, today)?;
+    let label = filter.label();
     let mut cache = state.cache.lock().unwrap_or_else(|e| e.into_inner());
     cache.rooms.retain(|path, _| current.iter().any(|entry| &entry.0 == path));
     cache.selection = Some(Selection {
@@ -279,6 +378,155 @@ pub fn files(state: &State, path: &Path) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn independent_filter_combinations_preserve_date_boundaries_and_search_scope() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
+        let rooms: Vec<_> = [
+            ("new-open", 0, false, "Needle"),
+            ("new-done", 0, true, "NEEDLE"),
+            ("edge-open", 14, false, "境界"),
+            ("edge-done", 14, true, "境界"),
+            ("old-open", 15, false, "needle"),
+            ("old-done", 15, true, "needle"),
+            ("future-open", -1, false, "将来"),
+        ]
+        .into_iter()
+        .map(|(slug, age, done, description)| {
+            let date = today - chrono::TimeDelta::days(age);
+            room::Room {
+                name: format!("{date}-{slug}"),
+                path: PathBuf::new(),
+                project: None,
+                date,
+                slug: slug.into(),
+                description: description.into(),
+                done,
+            }
+        })
+        .collect();
+        let all = vec!["new-open", "new-done", "edge-open", "edge-done", "old-open", "old-done", "future-open"];
+        let cases = [
+            (
+                Status::Active,
+                true,
+                DateRange::Within,
+                SearchScope::Filtered,
+                None,
+                vec!["new-open", "edge-open", "future-open"],
+            ),
+            (Status::Done, true, DateRange::Within, SearchScope::Filtered, None, vec!["new-done", "edge-done"]),
+            (
+                Status::All,
+                true,
+                DateRange::Within,
+                SearchScope::Filtered,
+                None,
+                vec!["new-open", "new-done", "edge-open", "edge-done", "future-open"],
+            ),
+            (Status::Active, true, DateRange::Before, SearchScope::Filtered, None, vec!["old-open"]),
+            (Status::Done, true, DateRange::Before, SearchScope::Filtered, None, vec!["old-done"]),
+            (Status::All, true, DateRange::Before, SearchScope::Filtered, None, vec!["old-open", "old-done"]),
+            (
+                Status::Active,
+                false,
+                DateRange::Before,
+                SearchScope::Filtered,
+                None,
+                vec!["new-open", "edge-open", "old-open", "future-open"],
+            ),
+            (
+                Status::Done,
+                false,
+                DateRange::Within,
+                SearchScope::Filtered,
+                None,
+                vec!["new-done", "edge-done", "old-done"],
+            ),
+            (Status::All, false, DateRange::Within, SearchScope::Filtered, None, all.clone()),
+            (Status::Active, true, DateRange::Within, SearchScope::Filtered, Some("needle"), vec!["new-open"]),
+            (Status::Done, true, DateRange::Within, SearchScope::Filtered, Some("needle"), vec!["new-done"]),
+            (Status::Active, true, DateRange::Before, SearchScope::Filtered, Some("needle"), vec!["old-open"]),
+            (Status::All, false, DateRange::Within, SearchScope::Filtered, Some("OLD-"), vec!["old-open", "old-done"]),
+            (
+                Status::Active,
+                true,
+                DateRange::Within,
+                SearchScope::All,
+                Some("needle"),
+                vec!["new-open", "new-done", "old-open", "old-done"],
+            ),
+            (
+                Status::Done,
+                true,
+                DateRange::Before,
+                SearchScope::All,
+                Some("needle"),
+                vec!["new-open", "new-done", "old-open", "old-done"],
+            ),
+            (Status::Done, true, DateRange::Before, SearchScope::All, None, all),
+            (Status::Active, true, DateRange::Within, SearchScope::Filtered, Some("一致なし"), vec![]),
+        ];
+        for (status, period, range, scope, query, expected) in cases {
+            let filter = Filter { query: query.map(str::to_string), status, period, days: 14, range, scope };
+            let mut actual = rooms.clone();
+            filter.retain(&mut actual, today).unwrap();
+            assert_eq!(actual.iter().map(|r| r.slug.as_str()).collect::<Vec<_>>(), expected, "{filter:?}");
+            assert_eq!(
+                filter.since(today).unwrap(),
+                if period && range == DateRange::Within && scope == SearchScope::Filtered {
+                    Some(today - chrono::TimeDelta::days(14))
+                } else {
+                    None
+                },
+                "{filter:?}"
+            );
+        }
+        let mut zero = rooms.clone();
+        Filter::from_cli(None, false, false, 0).retain(&mut zero, today).unwrap();
+        assert_eq!(zero.iter().map(|r| r.slug.as_str()).collect::<Vec<_>>(), ["new-open", "future-open"]);
+    }
+
+    #[test]
+    fn cli_arguments_set_initial_independent_conditions() {
+        for (query, all, old, days, status, period, range, scope) in [
+            (None, false, false, 14, Status::Active, true, DateRange::Within, SearchScope::Filtered),
+            (None, true, false, 14, Status::All, false, DateRange::Within, SearchScope::Filtered),
+            (None, false, true, 3, Status::Active, true, DateRange::Before, SearchScope::Filtered),
+            (Some("調査"), false, false, 7, Status::Active, true, DateRange::Within, SearchScope::All),
+            (Some("調査"), true, false, 0, Status::All, false, DateRange::Within, SearchScope::All),
+        ] {
+            let filter = Filter::from_cli(query.map(str::to_string), all, old, days);
+            assert_eq!(filter.status, status);
+            assert_eq!(filter.period, period);
+            assert_eq!(filter.range, range);
+            assert_eq!(filter.scope, scope);
+            assert_eq!(filter.days, days);
+            assert_eq!(filter.query.as_deref(), query);
+        }
+    }
+
+    #[test]
+    fn selection_uses_workroom_today_and_keeps_scan_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = super::super::test_state(dir.path());
+        state.settings.config.day_start_hour = 23;
+        let today = room::today(&state.settings);
+        for (age, done, slug) in [(0, false, "new"), (2, true, "edge"), (3, true, "old")] {
+            let path = dir.path().join(format!("{}-{slug}", today - chrono::TimeDelta::days(age)));
+            fs::create_dir(&path).unwrap();
+            fs::write(path.join(room::README), "# 共通の説明\n").unwrap();
+            if done {
+                fs::write(path.join(room::DONE_MARKER), "").unwrap();
+            }
+        }
+        let filter = Filter { status: Status::Done, ..Filter::from_cli(None, false, false, 2) };
+        let (rooms, label) = selected(&state, &filter).unwrap();
+        assert_eq!(rooms.iter().map(|r| r.slug.as_str()).collect::<Vec<_>>(), ["edge"]);
+        assert_eq!(label, "完了 · 2日以内");
+        let (rooms, _) = selected(&state, &Filter { range: DateRange::Before, ..filter }).unwrap();
+        assert_eq!(rooms.iter().map(|r| r.slug.as_str()).collect::<Vec<_>>(), ["old"]);
+    }
 
     #[test]
     fn file_categories_mix_new_and_old_layouts_with_separate_limits() {

@@ -306,9 +306,68 @@ fn initial_filter_cwd_file_and_missing_root_are_preserved() {
     fs::write(env.base.join("config.toml"), "hub_port = 1\nrecent_days = 3\n").unwrap();
     let hub = env.start(&["ハブ", "-o", "--days", "2"]);
     let config = hub.json("/api/config");
-    assert_eq!(config["filter"], json!({"query":"ハブ", "mode":"old", "days":2}));
+    assert_eq!(
+        config["filter"],
+        json!({"query":"ハブ", "status":"active", "period":true, "days":2, "range":"before", "scope":"all"})
+    );
     assert_eq!(hub.json("/api/rooms")["rooms"].as_array().unwrap().len(), 1);
     assert_eq!(hub.json("/api/rooms?q=一致なし")["rooms"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn room_and_cross_room_question_apis_share_independent_filters() {
+    let env = Env::new();
+    fs::write(env.base.join("config.toml"), "day_start_hour = 23\nrecent_days = 2\n").unwrap();
+    let today = (chrono::Local::now() - chrono::TimeDelta::hours(23)).date_naive();
+    for (age, done, slug) in
+        [(0, false, "new-open"), (2, true, "edge-done"), (3, false, "old-open"), (3, true, "old-done")]
+    {
+        let room = env.root.join(format!("{}-{slug}", today - chrono::TimeDelta::days(age)));
+        fs::create_dir_all(&room).unwrap();
+        fs::write(room.join("README.md"), "# 共通の説明\n").unwrap();
+        if done {
+            fs::write(room.join(".done"), "").unwrap();
+        }
+    }
+    let before = snapshot(&env.base);
+    let hub = env.start(&[]);
+    assert_eq!(
+        hub.json("/api/config")["filter"],
+        json!({"query":null, "status":"active", "period":true, "days":2, "range":"within", "scope":"filtered"})
+    );
+    let cases = [
+        ("", vec!["new-open"]),
+        ("status=done", vec!["edge-done"]),
+        ("status=all", vec!["new-open", "edge-done"]),
+        ("status=all&period=0", vec!["new-open", "edge-done", "old-open", "old-done"]),
+        ("status=done&range=before", vec!["old-done"]),
+        ("status=active&range=before", vec!["old-open"]),
+        ("q=共通&scope=filtered", vec!["new-open"]),
+        ("q=共通&scope=all", vec!["new-open", "edge-done", "old-open", "old-done"]),
+        ("q=共通&scope=all&status=done&range=before", vec!["new-open", "edge-done", "old-open", "old-done"]),
+        ("status=done&period=0&days=9223372036854775807", vec!["edge-done", "old-done"]),
+        ("scope=all&days=9223372036854775807", vec!["new-open", "edge-done", "old-open", "old-done"]),
+    ];
+    for (params, expected) in cases {
+        let data = hub.json(&format!("/api/rooms?{params}"));
+        let actual: std::collections::BTreeSet<_> =
+            data["rooms"].as_array().unwrap().iter().map(|room| room["title"].as_str().unwrap()).collect();
+        assert_eq!(actual, expected.into_iter().collect(), "{params}");
+        let questions = hub.json(&format!("/api/questions/all?{params}"));
+        let room_labels: std::collections::BTreeSet<_> =
+            data["rooms"].as_array().unwrap().iter().map(|room| room["room"].as_str().unwrap()).collect();
+        assert_eq!(
+            questions["rooms"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|room| room["room"].as_str().unwrap())
+                .collect::<std::collections::BTreeSet<_>>(),
+            room_labels,
+            "{params}"
+        );
+    }
+    assert_eq!(snapshot(&env.base), before);
 }
 
 #[test]

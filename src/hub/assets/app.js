@@ -14,6 +14,8 @@
     if (saved === "collapsed" || saved === "expanded") sidebarPreference = saved;
   } catch { /* 保存できなくても表示する */ }
   let sidebarCollapsed = sidebarPreference === null ? compactViewport.matches : sidebarPreference === "collapsed";
+  let filesCollapsed = false;
+  try { filesCollapsed = localStorage.getItem("workroom-hub-files") === "collapsed"; } catch { /* 保存は任意 */ }
   let theme;
   try { theme = localStorage.getItem("workroom-hub-theme"); } catch { /* 保存できなくても表示する */ }
   if (theme === "dark" || theme === "light") document.documentElement.className = theme;
@@ -49,10 +51,32 @@
     return response.json();
   }
   function scope(params) {
-    return new URLSearchParams({ q: params.get("q") || "", mode: params.get("mode") || "recent", days: params.get("days") || "0", sort: params.get("sort") || "date", unanswered: params.get("unanswered") || "0" });
+    const defaults = initialFilters();
+    return new URLSearchParams(Object.entries(defaults).map(([key, value]) => [key, params.get(key) ?? value]));
+  }
+  function initialFilters() {
+    return { q: config.filter.query || "", status: config.filter.status, period: config.filter.period ? "1" : "0", days: String(config.filter.days), range: config.filter.range, scope: config.filter.scope, sort: "date", unanswered: "0" };
+  }
+  function setSegment(id, value) {
+    const group = $(id);
+    group.dataset.value = value;
+    group.querySelectorAll("button").forEach((node) => node.setAttribute("aria-pressed", String(node.value === value)));
+  }
+  function updateFilterControls() {
+    const allRooms = $("scope-filter").dataset.value === "all";
+    const period = $("period").checked;
+    $("status-filter").classList.toggle("disabled-filter", allRooms);
+    $("status-filter").querySelectorAll("button").forEach((node) => { node.disabled = allRooms; });
+    $("period-filter").classList.toggle("disabled-filter", allRooms);
+    $("period-options").classList.toggle("disabled-filter", !allRooms && !period);
+    $("period").disabled = allRooms;
+    $("days").disabled = allRooms || !period;
+    $("range-filter").querySelectorAll("button").forEach((node) => { node.disabled = allRooms || !period; });
+    $("status-filter").title = allRooms ? "全部屋検索中は状態の条件を使いません" : "完了は .done のある部屋です";
+    $("period-filter").title = allRooms ? "全部屋検索中は期間の条件を使いません" : "部屋名の日付で絞ります。チェックを外すと期間を制限しません";
   }
   function filterValues() {
-    return { q: $("query").value, mode: $("mode").value, days: $("days").value || "0", sort: $("sort").value, unanswered: $("unanswered").checked ? "1" : "0" };
+    return { q: $("query").value, status: $("status-filter").dataset.value, period: $("period").checked ? "1" : "0", days: $("days").value || "0", range: $("range-filter").dataset.value, scope: $("scope-filter").dataset.value, sort: $("sort").value, unanswered: $("unanswered").checked ? "1" : "0" };
   }
   function invalidateRequest() {
     generation++;
@@ -81,10 +105,12 @@
     if (key !== controlFilterState) {
       clearTimeout(filterTimer);
       filterTimer = null;
-      $("mode").value = values.mode; $("days").value = values.days; $("query").value = values.q;
+      setSegment("status-filter", values.status); setSegment("range-filter", values.range); setSegment("scope-filter", values.scope);
+      $("period").checked = values.period === "1"; $("days").value = values.days; $("query").value = values.q;
       $("sort").value = values.sort; $("unanswered").checked = values.unanswered === "1";
       controlFilterState = key;
     }
+    updateFilterControls();
   }
   function updateSidebar() {
     const roomPage = (state().get("page") || "rooms") === "rooms";
@@ -105,7 +131,7 @@
   }
   function fileSelection(room, path) {
     const tab = state().get("tab");
-    return { page: "rooms", room, tab: tab === "files" || tab === "other" ? tab : path.toLowerCase() === "readme.md" ? "overview" : "files", file: path };
+    return { page: "rooms", room, tab: tab === "files" || tab === "other" ? "files" : path.toLowerCase() === "readme.md" ? "overview" : "files", file: path };
   }
   function hubUrl(room, path) {
     const url = new URL("/", location.origin);
@@ -190,10 +216,11 @@
     parent.append(element("pre", text));
     if (size >= limit) parent.append(element("p", "先頭 1 MiB までを表示しています。", "muted"));
   }
-  async function preview(parent, room, path, ticket) {
+  async function preview(parent, room, path, ticket, fileToggle) {
     if (ticket !== generation) return;
     const panel = element("section", undefined, "preview");
     const heading = element("div", undefined, "preview-header");
+    if (fileToggle) heading.append(fileToggle);
     const title = element("h3", path);
     title.title = path;
     heading.append(title);
@@ -275,8 +302,8 @@
     }
     header.append(heading);
     const tabs = element("div", undefined, "tabs");
-    const tab = params.get("tab") || "overview";
-    for (const [key, text] of [["overview", "概要"], ["files", "成果物"], ["questions", `確認事項 ${room.unanswered + room.pending}`], ["other", "その他のファイル"]]) {
+    const tab = params.get("tab") === "other" ? "files" : params.get("tab") || "overview";
+    for (const [key, text] of [["overview", "概要"], ["files", "成果物"], ["questions", `確認事項 ${room.unanswered + room.pending}`]]) {
       tabs.append(button(text, () => change({ tab: key, file: "" }), tab === key));
     }
     header.append(tabs);
@@ -294,11 +321,11 @@
     } else if (tab === "overview") {
       const files = await api("/api/files?" + new URLSearchParams({ room: label }));
       if (ticket !== generation) return;
-      await showFiles(files.main, label, params, ticket, "README.md がないため、成果物を表示します。");
-    } else if (tab === "files" || tab === "other") {
+      await showFiles(files, label, params, ticket, "README.md がないため、成果物を表示します。");
+    } else if (tab === "files") {
       const files = await api("/api/files?" + new URLSearchParams({ room: label }));
       if (ticket !== generation) return;
-      await showFiles(files[tab === "files" ? "main" : "other"], label, params, ticket);
+      await showFiles(files, label, params, ticket);
     } else {
       tabs.append(button(params.get("all") === "1" ? "未回答・未反映だけ" : "すべて", () => change({ all: params.get("all") === "1" ? "0" : "1" })));
       const body = element("div", undefined, "content-body");
@@ -319,19 +346,44 @@
       }
     }
   }
-  async function showFiles(group, room, params, ticket, message) {
+  async function showFiles(files, room, params, ticket, message) {
     if (ticket !== generation) return;
     const workspace = element("div", undefined, "file-workspace");
     const browser = element("aside", undefined, "file-browser");
+    browser.id = "file-browser";
     browser.setAttribute("aria-label", "ファイルの一覧");
-    browser.append(element("h2", "ファイル"));
+    browser.append(element("h2", "主なファイル"));
     if (message) browser.append(element("p", message, "muted"));
-    fileList(browser, group, room, params);
+    fileList(browser, files.main, room, params);
+    const other = element("details");
+    other.append(element("summary", `その他のファイル（${files.other.items.length} 件）`));
+    other.open = files.other.items.some((item) => item.path === params.get("file"));
+    fileList(other, files.other, room, params);
+    browser.append(other);
     const pane = element("div", undefined, "file-preview");
     workspace.append(browser, pane);
     content.append(workspace);
-    if (params.get("file")) await preview(pane, room, params.get("file"), ticket);
-    else pane.append(element("p", "ファイルを選択してください。", "muted"));
+    const update = () => {
+      workspace.classList.toggle("files-collapsed", filesCollapsed);
+      browser.hidden = filesCollapsed;
+      toggle.textContent = filesCollapsed ? "一覧 ▸" : "◂ 一覧";
+      toggle.title = filesCollapsed ? "ファイルの一覧を表示" : "ファイルの一覧を畳む";
+      toggle.setAttribute("aria-label", toggle.title);
+      toggle.setAttribute("aria-expanded", String(!filesCollapsed));
+    };
+    const toggle = button("", () => {
+      filesCollapsed = !filesCollapsed;
+      try { localStorage.setItem("workroom-hub-files", filesCollapsed ? "collapsed" : "expanded"); } catch { /* 保存は任意 */ }
+      update();
+    });
+    toggle.setAttribute("aria-controls", "file-browser");
+    update();
+    if (params.get("file")) await preview(pane, room, params.get("file"), ticket, toggle);
+    else {
+      const toolbar = element("div", undefined, "toolbar");
+      toolbar.append(toggle);
+      pane.append(toolbar, element("p", "ファイルを選択してください。", "muted"));
+    }
   }
   function archiveFilters(groups, params, parent) {
     const controls = element("div", undefined, "archive-filters");
@@ -343,8 +395,8 @@
     rooms.addEventListener("change", () => change({ archiveRoom: rooms.value }));
     const status = element("select"); status.setAttribute("aria-label", "確認事項の状態");
     for (const [key, text] of [["", "すべての状態"], ...Object.entries(labels)]) { const option = element("option", text); option.value = key; status.append(option); }
-    status.value = params.get("status") || "";
-    status.addEventListener("change", () => change({ status: status.value }));
+    status.value = params.get("question_status") || "";
+    status.addEventListener("change", () => change({ question_status: status.value }));
     const search = element("input"); search.type = "search"; search.placeholder = "質問・回答を検索"; search.setAttribute("aria-label", "質問・回答を検索"); search.value = params.get("search") || "";
     search.addEventListener("change", () => change({ search: search.value }));
     controls.append(rooms, status, search);
@@ -364,7 +416,7 @@
       const items = data.rooms.flatMap((group) => {
         warnings(body, group);
         return group.questions.map((question) => ({ room: group.room, question }));
-      }).filter(({ room, question }) => (!params.get("archiveRoom") || room === params.get("archiveRoom")) && (!params.get("status") || question.state === params.get("status")) && archiveSearchText(question, room).includes(search));
+      }).filter(({ room, question }) => (!params.get("archiveRoom") || room === params.get("archiveRoom")) && (!params.get("question_status") || question.state === params.get("question_status")) && archiveSearchText(question, room).includes(search));
       items.sort((a, b) => b.question.id.slice(2, 10).localeCompare(a.question.id.slice(2, 10)) || Number(b.question.id.slice(11)) - Number(a.question.id.slice(11)) || a.room.localeCompare(b.room));
       header.append(element("span", `${items.length} 件`, "muted"));
       for (const item of items) body.append(questionCard(item.question, item.room));
@@ -402,6 +454,7 @@
     requestController = new AbortController();
     const params = state();
     notice("読み込み中…");
+    $("filter-summary").textContent = "…";
     content.replaceChildren();
     syncFilters(params);
     const page = params.get("page") || "rooms";
@@ -410,6 +463,9 @@
     try {
       const data = await api("/api/rooms?" + scope(params));
       if (ticket !== generation) return;
+      const summary = `${data.rooms.length} 件 · ${data.label}`;
+      $("filter-summary").textContent = summary;
+      $("filter-summary").title = summary;
       $("rooms").setAttribute("aria-label", `${data.label} · ${data.rooms.length} 部屋`);
       $("rooms").replaceChildren();
       let selected = data.rooms.find((room) => room.room === params.get("room")) || data.rooms[0];
@@ -446,7 +502,20 @@
     if (event.target.id === "query" || event.target.id === "days") scheduleFilters(300);
   });
   $("filters").addEventListener("change", (event) => {
-    if (["mode", "sort", "unanswered"].includes(event.target.id)) scheduleFilters(0);
+    if (["period", "sort", "unanswered"].includes(event.target.id)) { updateFilterControls(); scheduleFilters(0); }
+  });
+  for (const id of ["status-filter", "range-filter", "scope-filter"]) {
+    $(id).querySelectorAll("button").forEach((node) => node.addEventListener("click", () => {
+      setSegment(id, node.value);
+      updateFilterControls();
+      scheduleFilters(0);
+    }));
+  }
+  $("clear-filters").addEventListener("click", () => {
+    clearTimeout(filterTimer);
+    filterTimer = null;
+    controlFilterState = null;
+    change(initialFilters());
   });
   $("filters").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.isComposing && ["query", "days"].includes(event.target.id)) {
@@ -485,7 +554,7 @@
     config = data;
     $("root").title = "作業ルート: " + data.root;
     const params = state();
-    for (const [key, value] of Object.entries({ q: data.filter.query || "", mode: data.filter.mode, days: data.filter.days, page: "rooms", sort: "date" })) if (!params.has(key)) params.set(key, String(value));
+    for (const [key, value] of Object.entries({ ...initialFilters(), page: "rooms" })) if (!params.has(key)) params.set(key, String(value));
     history.replaceState(null, "", "#" + params.toString());
     refresh();
   }).catch(showError);
