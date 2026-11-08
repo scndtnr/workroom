@@ -261,7 +261,7 @@ fn lists_states_questions_and_files_without_any_disk_writes() {
     let summary = rooms.iter().find(|r| r["room"] == "EXAMPLE/2026-11-03-調査").unwrap();
     assert_eq!(summary["unanswered"], 1);
     assert_eq!(summary["pending"], 1);
-    assert_eq!(summary["state"], "ユーザー待ち");
+    assert_eq!(summary["state"], "回答待ち");
     assert_eq!(summary["status"], "待ち（確認）");
     assert_eq!(summary["description"], "ハブの動作確認");
     assert_eq!(rooms.iter().find(|r| r["room"] == "2026-11-02-done").unwrap()["state"], "完了");

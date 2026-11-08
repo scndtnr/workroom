@@ -259,8 +259,11 @@
       ...question.answers.map((answer) => answer.text), ...question.done.map((event) => event.to),
       question.withdrawals.at(-1)?.reason].filter((value) => typeof value === "string").join("\n").toLocaleLowerCase();
   }
-  const statusClass = (status) => status.startsWith("待ち") || status.endsWith("待ち") ? "pending" : status.startsWith("進行中") || status.startsWith("完了可") ? "unanswered" : "";
+  // 表示名を変えるときは、サーバの部屋の状態（src/hub/listing.rs の summary）もそろえる。
   const labels = { unanswered: "回答待ち", pending: "反映待ち", resolved: "解決済み", withdrawn: "取り下げ" };
+  // 部屋の状態の「回答待ち」「反映待ち」は、確認事項の状態の印と同じ色にする。
+  const statusClass = (status) => status === labels.unanswered ? "unanswered" : status === labels.pending ? "pending"
+    : status.startsWith("待ち") || status.endsWith("待ち") ? "pending" : status.startsWith("進行中") || status.startsWith("完了可") ? "unanswered" : "";
   for (const status of ["unanswered", "pending"]) {
     $("qstate-filter").querySelector(`button[value="${status}"]`).textContent = labels[status];
   }
@@ -487,6 +490,8 @@
           // 待っている間に新しい下書きができていたら、その入力は残す。
           if (index >= 0 && drafts.get(draftKey(submission.room, id)) === snapshots[index]) removeDraft(submission.room, id);
           answerErrors.delete(draftKey(submission.room, id));
+          // 再回答を送り終えたカードは畳み直す（新しい下書きが残っていれば、下書きのために開いたままになる）。
+          additionalAnswersOpen.delete(draftKey(submission.room, id));
         }
         submission.status = "sent";
         addAnswerGuide(submission.room, data.sent, batch.fromQuestions);
