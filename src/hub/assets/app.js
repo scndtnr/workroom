@@ -15,6 +15,7 @@
   const additionalAnswersOpen = new Set();
   let draftWarningShown = false;
   let questionGroups = [];
+  let visibleQuestions = [];
   let renderedQuestionParams = null;
   let composingAnswer = false;
   let deferredQuestionRender = null;
@@ -50,6 +51,7 @@
     for (const key of ["archiveRoom", "question_status", "search"]) params.delete(key);
     if (params.get("all") === "1") params.set("qstate", "all");
     params.delete("all");
+    if (params.get("qstate") === "waiting") params.set("qstate", "unanswered");
     if (params.get("tab") === "questions") {
       params.delete("tab");
       if (collapsedPane === "questions") setCollapsedPane("");
@@ -161,7 +163,7 @@
     }
     updateFilterControls();
   }
-  const initialQuestionFilters = () => ({ qstate: "waiting", qq: "", qsort: "room" });
+  const initialQuestionFilters = () => ({ qstate: "unanswered", qq: "", qsort: "room" });
   function questionFilterState(params) {
     return Object.fromEntries(Object.entries(initialQuestionFilters()).map(([key, value]) => [key, params.get(key) ?? value]));
   }
@@ -192,6 +194,7 @@
     }
     const roomPage = (params.get("page") || "rooms") === "rooms";
     $("qsort-filter").hidden = roomPage;
+    $("all-answer-actions").hidden = roomPage;
     $("questions-heading").textContent = roomPage ? "確認事項（この部屋）" : "確認事項（条件内の部屋）";
   }
   function updatePanes() {
@@ -257,7 +260,13 @@
       question.withdrawals.at(-1)?.reason].filter((value) => typeof value === "string").join("\n").toLocaleLowerCase();
   }
   const statusClass = (status) => status.startsWith("待ち") || status.endsWith("待ち") ? "pending" : status.startsWith("進行中") || status.startsWith("完了可") ? "unanswered" : "";
-  const labels = { unanswered: "未回答", pending: "回答済み・未反映", resolved: "解決済み", withdrawn: "取り下げ" };
+  const labels = { unanswered: "回答待ち", pending: "反映待ち", resolved: "解決済み", withdrawn: "取り下げ" };
+  for (const status of ["unanswered", "pending"]) {
+    $("qstate-filter").querySelector(`button[value="${status}"]`).textContent = labels[status];
+  }
+  $("unanswered-label").textContent = labels.unanswered + "あり";
+  $("sort").querySelector('option[value="unanswered"]').textContent = labels.unanswered + "順";
+  $("clear-question-filters").title = labels.unanswered + "・検索なし・部屋ごとに戻します";
   function questionUrl(room, id, roomPage = false) {
     const params = state();
     params.set("room", room);
@@ -329,6 +338,12 @@
         return sendable(draft) ? [{ id: question.id, kind: draft.kind, text: draft.text }] : [];
       });
   }
+  function visibleAnswers() {
+    return questionGroups.map(({ room }) => ({
+      room,
+      answers: roomAnswers(room).filter((answer) => visibleQuestions.some((item) => item.room === room && item.question.id === answer.id))
+    })).filter((group) => group.answers.length);
+  }
   function updateDraftUI() {
     document.querySelectorAll("[data-draft-count]").forEach((node) => {
       const count = draftCount(node.dataset.draftCount);
@@ -343,6 +358,9 @@
       error.hidden = !error.textContent;
     });
     document.querySelectorAll(".answer-form button, .answer-form textarea, .withdrawn-draft button").forEach((node) => { node.disabled = submitting; });
+    document.querySelectorAll(".answer-choices button").forEach((node) => {
+      node.disabled = submitting || node.closest(".answer-form").classList.contains("not-needed");
+    });
     document.querySelectorAll("[data-answer-send]").forEach((node) => {
       node.disabled = submitting || !sendable(drafts.get(draftKey(node.dataset.room, node.dataset.answerSend)));
     });
@@ -351,36 +369,71 @@
       node.textContent = `この部屋の回答を送信（${count} 件）`;
       node.disabled = submitting || !count;
     });
+    const count = visibleAnswers().reduce((total, group) => total + group.answers.length, 0);
+    $("all-answer-send").textContent = `記入済みの回答をすべて送信（${count} 件）`;
+    $("all-answer-send").disabled = submitting || !count;
   }
   function roomSendButton(room) {
-    const node = button("", () => confirmAnswers(room, roomAnswers(room)));
+    const node = button("", () => confirmAnswers([{ room, answers: roomAnswers(room) }]));
     node.dataset.roomSend = room;
     return node;
   }
-  function confirmAnswers(room, answers) {
-    if (submitting || !answers.length) return;
-    confirmation = { room, answers, fromQuestions: state().get("page") === "questions", error: "" };
+  function confirmAnswers(groups) {
+    if (submitting || !groups.some((group) => group.answers.length)) return;
+    confirmation = {
+      groups: groups.filter((group) => group.answers.length).map(({ room, answers }) => ({
+        room, answers, status: "ready", error: "",
+        questionTexts: answers.map((answer) => {
+          const question = questionGroups.find((group) => group.room === room)?.questions.find((question) => question.id === answer.id);
+          return question ? ask(question).question || "質問なし" : "質問なし";
+        })
+      })),
+      fromQuestions: state().get("page") === "questions", complete: false, tokenInvalid: false
+    };
     renderConfirmation();
     $("answer-confirmation").scrollIntoView({ block: "nearest" });
+  }
+  function includesWithdrawn(group) {
+    return group.answers.some((answer) => questionGroups.find((current) => current.room === group.room)?.questions.some((question) => question.id === answer.id && question.state === "withdrawn"));
   }
   function renderConfirmation() {
     const panel = $("answer-confirmation");
     panel.replaceChildren();
     panel.hidden = !confirmation;
     if (!confirmation) return;
-    panel.append(element("h2", "回答の送信確認"), element("p", `部屋: ${confirmation.room}`), element("p", `${confirmation.answers.length} 件を送信します。`));
-    const list = element("ul");
-    for (const answer of confirmation.answers) list.append(element("li", `${answer.id} · ${answer.kind === "not_needed" ? "回答不要" : "回答"}`));
+    panel.append(element("h2", "回答の送信確認"));
+    const list = element("div", undefined, "answer-confirmation-list");
+    for (const group of confirmation.groups) {
+      const section = element("section");
+      section.append(element("h3", `${group.room}（${group.answers.length} 件）`));
+      group.answers.forEach((answer, index) => {
+        const entry = element("div", undefined, "answer-confirmation-entry");
+        entry.append(element("p", answer.id), element("p", group.questionTexts[index], "confirmation-text"),
+          element("p", answer.kind === "not_needed" ? "回答不要" : "回答", "muted"),
+          element("p", answer.kind === "not_needed" && !answer.text ? "理由なし" : answer.text, "confirmation-text"));
+        section.append(entry);
+      });
+      if (group.status === "sent") section.append(element("p", "送信しました"));
+      if (group.status === "skipped") section.append(element("p", "送信を中止しました。下書きは残しています。", "warning"));
+      if (group.error) section.append(element("p", group.error, "warning"));
+      list.append(section);
+    }
     const send = button(submitting ? "送信中…" : "送信する", sendAnswers);
-    const cancel = button("やめる", () => { confirmation = null; renderConfirmation(); });
+    const cancel = button(confirmation.complete ? "閉じる" : "やめる", () => { confirmation = null; renderConfirmation(); });
     send.disabled = cancel.disabled = submitting;
-    const withdrawn = confirmation.answers.some((answer) => questionGroups.find((group) => group.room === confirmation.room)?.questions.some((question) => question.id === answer.id && question.state === "withdrawn"));
+    const withdrawn = !confirmation.complete && confirmation.groups.some(includesWithdrawn);
     if (withdrawn) send.disabled = true;
     const actions = element("div", undefined, "answer-actions");
-    actions.append(send, cancel);
-    panel.append(list, actions);
-    if (confirmation.error) panel.append(element("p", confirmation.error, "warning"));
+    if (!confirmation.complete) actions.append(send);
+    actions.append(cancel);
+    panel.append(list);
+    if (confirmation.complete) {
+      const sent = confirmation.groups.filter((group) => group.status === "sent").length;
+      panel.append(element("p", `${confirmation.groups.length} 部屋中 ${sent} 部屋を送信しました。`));
+    }
+    if (confirmation.tokenInvalid) panel.append(element("p", "トークンが無効なため、残りの送信を中止しました。ページを再読み込みしてください。", "warning"));
     if (withdrawn) panel.append(element("p", "取り下げた項目が含まれています。「やめる」で戻り、送信する回答を選び直してください。", "warning"));
+    panel.append(actions);
   }
   function redrawQuestions() {
     if (renderedQuestionParams) renderQuestions(questionGroups, renderedQuestionParams, generation, renderedQuestionParams.get("page") !== "questions");
@@ -390,45 +443,69 @@
     redrawQuestions();
   }
   async function sendAnswers() {
-    if (submitting || !confirmation) return;
-    if (confirmation.answers.some((answer) => questionGroups.find((group) => group.room === confirmation.room)?.questions.some((question) => question.id === answer.id && question.state === "withdrawn"))) return;
-    const submission = confirmation;
-    const snapshots = submission.answers.map((answer) => drafts.get(draftKey(submission.room, answer.id)));
+    if (submitting || !confirmation || confirmation.complete || confirmation.groups.some(includesWithdrawn)) return;
+    const batch = confirmation;
     submitting = true;
-    submission.error = "";
-    submission.answers.forEach((answer) => answerErrors.delete(draftKey(submission.room, answer.id)));
+    for (const group of batch.groups) group.answers.forEach((answer) => answerErrors.delete(draftKey(group.room, answer.id)));
     renderConfirmation();
     updateDraftUI();
+    try {
+      for (const group of batch.groups) {
+        if (batch.tokenInvalid) group.status = "skipped";
+        else await sendAnswerGroup(group, batch);
+        renderConfirmation();
+        updateDraftUI();
+      }
+      // 一連の送信後に部屋の状態・件数・「回答待ちあり」の条件を取り直す。
+      if (batch.groups.some((group) => group.status === "sent" || group.withdrawn)) await refresh();
+    } finally {
+      batch.complete = true;
+      submitting = false;
+      renderConfirmation();
+      updateDraftUI();
+    }
+  }
+  async function sendAnswerGroup(submission, batch) {
+    const snapshots = submission.answers.map((answer) => drafts.get(draftKey(submission.room, answer.id)));
+    submission.status = "failed";
+    if (includesWithdrawn(submission)) {
+      submission.error = "取り下げた項目が含まれているため、この部屋は送信しませんでした。下書きは残しています。";
+      return;
+    }
     try {
       const response = await fetch("/api/answers", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Workroom-Token": document.querySelector('meta[name="workroom-token"]').content },
         body: JSON.stringify({ room: submission.room, answers: submission.answers })
       });
-      const data = await response.json();
+      // JSON を読めないエラー応答でも、403 は必ず残りの送信を止める。
+      const data = await response.json().catch(() => null);
       if (response.status === 200) {
+        if (!Array.isArray(data?.sent) || !data.questions) throw new Error();
         for (const id of data.sent) {
           const index = submission.answers.findIndex((answer) => answer.id === id);
           // 待っている間に新しい下書きができていたら、その入力は残す。
           if (index >= 0 && drafts.get(draftKey(submission.room, id)) === snapshots[index]) removeDraft(submission.room, id);
           answerErrors.delete(draftKey(submission.room, id));
         }
-        confirmation = null;
-        addAnswerGuide(submission.room, data.sent, submission.fromQuestions);
+        submission.status = "sent";
+        addAnswerGuide(submission.room, data.sent, batch.fromQuestions);
         invalidateRequest();
         replaceQuestionGroup(submission.room, data.questions);
-        // 部屋の状態・件数・「未回答あり」の条件も取り直す。
-        await refresh();
       } else {
-        let message = typeof data.error === "string" ? data.error : `回答を送信できません（HTTP ${response.status}）`;
-        if (response.status === 403) message += "。ハブを再起動した場合は、ページを再読み込みしてください";
-        submission.error = data.id ? `${data.id}: ${message}` : message;
-        if (data.id) answerErrors.set(draftKey(submission.room, data.id), submission.error);
+        let message = typeof data?.error === "string" ? data.error : `回答を送信できません（HTTP ${response.status}）`;
+        if (response.status === 403) {
+          batch.tokenInvalid = true;
+          message += "。ハブを再起動した場合は、ページを再読み込みしてください";
+        }
+        submission.error = data?.id ? `${data.id}: ${message}` : message;
+        if (data?.id) answerErrors.set(draftKey(submission.room, data.id), submission.error);
         if (response.status === 409) {
+          submission.withdrawn = true;
           invalidateRequest();
           // 409 の情報を先に反映し、再取得に失敗しても取り下げた項目は送れなくする。
           const group = questionGroups.find((current) => current.room === submission.room);
-          const question = group?.questions.find((current) => current.id === data.id);
+          const question = group?.questions.find((current) => current.id === data?.id);
           if (question) {
             question.state = "withdrawn";
             question.withdrawals.push({ reason: data.reason || message, successor: data.successor });
@@ -439,15 +516,10 @@
             if (!current.ok) throw new Error();
             replaceQuestionGroup(submission.room, await current.json());
           } catch { submission.error += "。確認事項を再取得できません。⟳ で更新してください"; }
-          await refresh();
         }
       }
     } catch {
       submission.error = "回答の送信結果を確認できません。ネットワーク接続を確認し、⟳ で回答の状態を確認してください。下書きは残しています。";
-    } finally {
-      submitting = false;
-      renderConfirmation();
-      updateDraftUI();
     }
   }
   function addAnswerGuide(room, ids, fromQuestions) {
@@ -483,14 +555,23 @@
     const label = element("label");
     const labelText = element("span");
     label.append(labelText, textarea);
-    const toggle = button("回答不要", () => {
-      kind = kind === "not_needed" ? "answer" : "not_needed";
-      saveDraft(room, question.id, kind, textarea.value);
-      updateKind();
-    });
+    const explanation = element("p", "エージェントに、この確認は要らないと伝えます。理由は任意です。", "muted");
+    const kindButtons = element("div", undefined, "segments");
+    kindButtons.setAttribute("role", "group");
+    kindButtons.setAttribute("aria-label", "回答の種類");
+    for (const [value, text] of [["answer", "回答する"], ["not_needed", "回答不要にする"]]) {
+      const select = button(text, () => {
+        kind = value;
+        updateKind();
+        saveDraft(room, question.id, kind, textarea.value);
+      });
+      select.value = value;
+      kindButtons.append(select);
+    }
     function updateKind() {
       labelText.textContent = kind === "not_needed" ? "回答不要の理由（省略可）" : "回答";
-      toggle.setAttribute("aria-pressed", String(kind === "not_needed"));
+      kindButtons.querySelectorAll("button").forEach((node) => node.setAttribute("aria-pressed", String(node.value === kind)));
+      explanation.hidden = kind !== "not_needed";
       form.classList.toggle("not-needed", kind === "not_needed");
     }
     textarea.addEventListener("input", () => saveDraft(room, question.id, kind, textarea.value));
@@ -509,6 +590,7 @@
     (info.choices || []).forEach((choice, index) => {
       const line = element("li");
       const insert = button("入れる", () => {
+        if (submitting || kind === "not_needed") return;
         const start = textarea.selectionStart;
         textarea.setRangeText(choice, start, textarea.selectionEnd, "end");
         saveDraft(room, question.id, kind, textarea.value);
@@ -520,13 +602,13 @@
     });
     const send = button("この回答だけ送信", () => {
       const current = drafts.get(draftKey(room, question.id));
-      if (sendable(current)) confirmAnswers(room, [{ id: question.id, kind: current.kind, text: current.text }]);
+      if (sendable(current)) confirmAnswers([{ room, answers: [{ id: question.id, kind: current.kind, text: current.text }] }]);
     });
     send.dataset.answerSend = question.id;
     send.dataset.room = room;
     const actions = element("div", undefined, "answer-actions");
-    actions.append(toggle, send);
-    form.append(choices, label, actions);
+    actions.append(send);
+    form.append(kindButtons, choices, label, explanation, actions);
     updateKind();
     return form;
   }
@@ -607,12 +689,13 @@
     if (question.state === "withdrawn") {
       const draft = withdrawnDraft(question, room);
       if (draft) card.append(draft);
-    } else if (question.state === "resolved") {
+    } else if (question.state === "resolved" || question.state === "pending") {
       const details = element("details", undefined, "additional-answer");
       const key = draftKey(room, question.id);
       details.open = additionalAnswersOpen.has(key) || hasDraft(drafts.get(key));
-      details.append(element("summary", "追加で回答する"), answerForm(question, room));
+      details.append(element("summary", "再回答する"), answerForm(question, room));
       details.addEventListener("toggle", () => {
+        if (!details.isConnected) return;
         if (details.open) additionalAnswersOpen.add(key);
         else additionalAnswersOpen.delete(key);
       });
@@ -721,8 +804,8 @@
     const name = element("h1", label);
     name.title = label;
     heading.append(name, element("span", room.state, "badge " + statusClass(room.state)));
-    if (room.unanswered) heading.append(element("span", `未回答 ${room.unanswered}`, "badge unanswered"));
-    if (room.pending) heading.append(element("span", `未反映 ${room.pending}`, "badge pending"));
+    if (room.unanswered) heading.append(element("span", `${labels.unanswered} ${room.unanswered}`, "badge unanswered"));
+    if (room.pending) heading.append(element("span", `${labels.pending} ${room.pending}`, "badge pending"));
     if (room.status && room.status !== room.state) {
       const status = element("span", "status: " + room.status, "room-status");
       status.title = status.textContent;
@@ -797,7 +880,7 @@
   }
   function matchesQuestion(question, room, params) {
     const { qstate, qq } = questionFilterState(params);
-    const states = qstate === "all" ? Object.keys(labels) : qstate === "closed" ? ["resolved", "withdrawn"] : ["unanswered", "pending"];
+    const states = qstate === "all" ? Object.keys(labels) : qstate === "closed" ? ["resolved", "withdrawn"] : qstate === "pending" ? ["pending"] : ["unanswered"];
     return states.includes(question.state) && questionSearchText(question, room).includes(qq.toLocaleLowerCase());
   }
   function renderQuestions(groups, params, ticket, roomPage) {
@@ -822,6 +905,7 @@
     const items = groups.flatMap((group) => group.questions
       .filter((question) => matchesQuestion(question, group.room, params) || (question.state === "withdrawn" && hasDraft(drafts.get(draftKey(group.room, question.id)))))
       .map((question) => ({ room: group.room, question })));
+    visibleQuestions = [...items];
     const matchedCount = items.filter(({ room, question }) => matchesQuestion(question, room, params)).length;
     $("question-summary").textContent = `${matchedCount} 件${items.length > matchedCount ? ` · 取り下げた下書き ${items.length - matchedCount}` : ""}`;
     const newOrder = !roomPage && params.get("qsort") === "new";
@@ -848,6 +932,7 @@
     if (!matchedCount) body.append(element("p", "条件に合う確認事項はありません。", "muted"));
     // ブックマークや後継リンクの対象は、確認事項の条件外でも読めるようにする。
     if (selected && !items.some((item) => item.room === selectedGroup.room && item.question.id === selected.id)) {
+      visibleQuestions.push({ room: selectedGroup.room, question: selected });
       body.append(element("h2", "選択中の確認事項（条件外・件数に含めません）"), questionCard(selected, selectedGroup.room, params, newOrder));
     } else if (params.get("q") && !selected) {
       body.append(element("p", "選択した確認事項は見つかりません。部屋の条件や同期状態を確認してください。", "muted"));
@@ -911,10 +996,11 @@
     try {
       const data = await api("/api/rooms?" + scope(params));
       if (ticket !== generation) return;
-      const summary = `${data.rooms.length} 件 · ${data.label}`;
+      const filterLabel = data.label.replace(/ · 未回答あり$/, ` · ${labels.unanswered}あり`);
+      const summary = `${data.rooms.length} 件 · ${filterLabel}`;
       $("filter-summary").textContent = summary;
       $("filter-summary").title = summary;
-      $("rooms").setAttribute("aria-label", `${data.label} · ${data.rooms.length} 部屋`);
+      $("rooms").setAttribute("aria-label", `${filterLabel} · ${data.rooms.length} 部屋`);
       $("rooms").replaceChildren();
       const selected = data.rooms.find((room) => room.room === params.get("room")) || (page === "rooms" ? data.rooms[0] : null);
       if (page === "rooms" && selected && params.get("room") !== selected.room) {
@@ -929,8 +1015,8 @@
         if (room.description) row.append(element("span", room.description, "room-desc"));
         const status = element("span", undefined, "room-state");
         status.append(element("span", room.state, statusClass(room.state)));
-        if (room.unanswered) status.append(element("span", `● ${room.unanswered}`, "badge unanswered"));
-        if (room.pending) status.append(element("span", `◆ ${room.pending}`, "badge pending"));
+        if (room.unanswered) status.append(element("span", `${labels.unanswered} ${room.unanswered}`, "badge unanswered"));
+        if (room.pending) status.append(element("span", `${labels.pending} ${room.pending}`, "badge pending"));
         status.append(draftCountBadge(room.room));
         row.append(status);
         if (room.status) row.append(element("span", "status: " + room.status, "room-desc"));
@@ -1009,6 +1095,7 @@
     controlQuestionFilterState = null;
     change(initialQuestionFilters());
   });
+  $("all-answer-send").addEventListener("click", () => confirmAnswers(visibleAnswers()));
   for (const name of ["questions", "files"]) {
     const other = name === "questions" ? "files" : "questions";
     $(name + "-collapse").addEventListener("click", () => setCollapsedPane(name));

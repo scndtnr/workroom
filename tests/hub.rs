@@ -302,6 +302,8 @@ fn lists_states_questions_and_files_without_any_disk_writes() {
         "draft-warning",
         "answer-confirmation",
         "answer-guides",
+        "all-answer-actions",
+        "all-answer-send",
         "files-pane",
         "room-detail",
         "questions-collapse",
@@ -313,6 +315,15 @@ fn lists_states_questions_and_files_without_any_disk_writes() {
     ] {
         assert!(html.contains(&format!("id=\"{id}\"")), "配信する HTML に {id} がありません");
     }
+    let question_states = html.split("id=\"qstate-filter\"").nth(1).unwrap().split("</div>").next().unwrap();
+    for value in ["unanswered", "pending", "closed", "all"] {
+        assert!(question_states.contains(&format!("value=\"{value}\"")));
+    }
+    assert_eq!(question_states.matches("<button").count(), 4);
+    assert!(question_states.contains("data-value=\"unanswered\""));
+    assert!(question_states.contains("人の回答を待っている確認事項（未回答）"));
+    assert!(question_states.contains("回答済みで、エージェントの反映を待っている確認事項"));
+    assert!(html.contains("記入済みの回答をすべて送信（0 件）"));
     let script = String::from_utf8(hub.get("/assets/app.js").body).unwrap();
     for forbidden in ["innerHTML", "outerHTML", "insertAdjacentHTML", "window.confirm(", "alert(", "prompt("] {
         assert!(!script.contains(forbidden), "配信する JS に {forbidden} を使わないでください");
