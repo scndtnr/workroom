@@ -36,8 +36,8 @@
       <div class="search-controls">
         <input id="query" type="search" aria-label="部屋名・説明を検索" title="部屋名と README の説明を検索します" placeholder="部屋名・説明">
       </div>
-      <label title="未回答の確認事項がある部屋だけ表示します"><input id="unanswered" type="checkbox">未回答あり</label>
-      <select id="sort" aria-label="並び順" title="部屋の並び順"><option value="date">新しい順</option><option value="updated">更新順</option><option value="unanswered">未回答順</option></select>
+      <label title="未回答の確認事項がある部屋だけ表示します"><input id="unanswered" type="checkbox"><span id="unanswered-label"></span></label>
+      <select id="sort" aria-label="並び順" title="部屋の並び順"><option value="date">新しい順</option><option value="updated">更新順</option><option value="unanswered"></option></select>
       <button id="clear-filters" type="button" title="起動時の初期条件に戻します">クリア</button>
       <span id="filter-summary" aria-live="polite" title="件数と表示中の条件"></span>
     </form>
@@ -61,8 +61,8 @@
             </div>
             <form id="question-filters" class="filter-bar" aria-label="確認事項の条件">
               <strong class="filter-label">確認事項の条件</strong>
-              <div id="qstate-filter" class="segments" data-value="waiting" role="group" aria-label="確認事項の状態">
-                <button type="button" value="waiting" aria-pressed="true" title="未回答と回答済み・未反映">対応待ち</button><button type="button" value="closed" aria-pressed="false" title="解決済みと取り下げ">済み</button><button type="button" value="all" aria-pressed="false">すべて</button>
+              <div id="qstate-filter" class="segments" data-value="unanswered" role="group" aria-label="確認事項の状態">
+                <button type="button" value="unanswered" aria-pressed="true" title="人の回答を待っている確認事項（未回答）"></button><button type="button" value="pending" aria-pressed="false" title="回答済みで、エージェントの反映を待っている確認事項"></button><button type="button" value="closed" aria-pressed="false" title="解決済みと取り下げ">済み</button><button type="button" value="all" aria-pressed="false">すべて</button>
               </div>
               <div class="search-controls">
                 <input id="question-query" type="search" aria-label="確認事項を検索" placeholder="質問・回答を検索" title="質問・背景・選択肢・回答・反映先・取り下げの理由・ID・部屋のラベルを検索します">
@@ -70,10 +70,18 @@
               <div id="qsort-filter" class="segments" data-value="room" role="group" aria-label="確認事項の並び順">
                 <button type="button" value="room" aria-pressed="true">部屋ごと</button><button type="button" value="new" aria-pressed="false">新しい順</button>
               </div>
-              <button id="clear-question-filters" type="button" title="対応待ち・検索なし・部屋ごとに戻します">クリア</button>
+              <button id="clear-question-filters" type="button">クリア</button>
               <span id="question-summary" aria-live="polite">0 件</span>
             </form>
-            <div id="question-list" class="content-body"></div>
+            <div id="all-answer-actions" class="answer-actions" hidden>
+              <button id="all-answer-send" type="button" disabled>記入済みの回答をすべて送信（0 件）</button>
+            </div>
+            <section id="answer-confirmation" class="answer-confirmation" aria-label="回答の送信確認" aria-live="polite" hidden></section>
+            <div id="question-content" class="content-body">
+              <p id="draft-warning" class="warning" role="status" hidden></p>
+              <div id="answer-guides" aria-live="polite"></div>
+              <div id="question-list"></div>
+            </div>
           </div>
         </section>
         <section id="files-pane" class="workspace-pane" aria-label="ファイル">

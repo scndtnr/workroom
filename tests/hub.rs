@@ -261,7 +261,7 @@ fn lists_states_questions_and_files_without_any_disk_writes() {
     let summary = rooms.iter().find(|r| r["room"] == "EXAMPLE/2026-11-03-調査").unwrap();
     assert_eq!(summary["unanswered"], 1);
     assert_eq!(summary["pending"], 1);
-    assert_eq!(summary["state"], "ユーザー待ち");
+    assert_eq!(summary["state"], "回答待ち");
     assert_eq!(summary["status"], "待ち（確認）");
     assert_eq!(summary["description"], "ハブの動作確認");
     assert_eq!(rooms.iter().find(|r| r["room"] == "2026-11-02-done").unwrap()["state"], "完了");
@@ -298,6 +298,12 @@ fn lists_states_questions_and_files_without_any_disk_writes() {
         "question-summary",
         "questions-pane",
         "question-list",
+        "question-content",
+        "draft-warning",
+        "answer-confirmation",
+        "answer-guides",
+        "all-answer-actions",
+        "all-answer-send",
         "files-pane",
         "room-detail",
         "questions-collapse",
@@ -308,6 +314,19 @@ fn lists_states_questions_and_files_without_any_disk_writes() {
         "files-restore",
     ] {
         assert!(html.contains(&format!("id=\"{id}\"")), "配信する HTML に {id} がありません");
+    }
+    let question_states = html.split("id=\"qstate-filter\"").nth(1).unwrap().split("</div>").next().unwrap();
+    for value in ["unanswered", "pending", "closed", "all"] {
+        assert!(question_states.contains(&format!("value=\"{value}\"")));
+    }
+    assert_eq!(question_states.matches("<button").count(), 4);
+    assert!(question_states.contains("data-value=\"unanswered\""));
+    assert!(question_states.contains("人の回答を待っている確認事項（未回答）"));
+    assert!(question_states.contains("回答済みで、エージェントの反映を待っている確認事項"));
+    assert!(html.contains("記入済みの回答をすべて送信（0 件）"));
+    let script = String::from_utf8(hub.get("/assets/app.js").body).unwrap();
+    for forbidden in ["innerHTML", "outerHTML", "insertAdjacentHTML", "window.confirm(", "alert(", "prompt("] {
+        assert!(!script.contains(forbidden), "配信する JS に {forbidden} を使わないでください");
     }
     for name in ["README.md", "outputs/report.html", "docs/a.md", "docs/image.svg", "QUESTIONS.md"] {
         assert_eq!(hub.get(&format!("{prefix}{name}")).status, 200);
