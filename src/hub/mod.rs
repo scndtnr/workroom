@@ -18,6 +18,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// 応答の後に読み捨てる要求の残りの上限。
+const DRAIN_LIMIT: u64 = http::MAX_HEADERS as u64 + http::MAX_BODY;
+
 pub struct Options {
     pub query: Option<String>,
     pub all: bool,
@@ -177,6 +180,10 @@ fn serve(listener: TcpListener, state: Arc<State>) -> Result<()> {
             }
             // 本文を読まずに拒否した接続でも、応答の後に送信の終了を通知する。
             let _ = stream.shutdown(std::net::Shutdown::Write);
+            // 読み残しがあるまま閉じると Linux などでは RST が送られ、相手が応答を受け取れないことがある。
+            // 上限と短い待ち時間の範囲で残りを読み捨ててから閉じる。
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+            let _ = std::io::copy(&mut (&stream).take(DRAIN_LIMIT), &mut std::io::sink());
         }) {
             eprintln!("ハブの処理を開始できません: {error}");
         }
