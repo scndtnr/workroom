@@ -248,7 +248,7 @@ fn fixture(env: &Env) -> PathBuf {
 }
 
 #[test]
-fn lists_states_questions_archives_and_files_without_any_disk_writes() {
+fn lists_states_questions_and_files_without_any_disk_writes() {
     let env = Env::new();
     let room = fixture(&env);
     let done = env.root.join("2026-11-02-done");
@@ -283,6 +283,31 @@ fn lists_states_questions_archives_and_files_without_any_disk_writes() {
     let prefix = format!("/f/EXAMPLE/{}/", encode("2026-11-03-調査"));
     for target in ["/", "/assets/app.js", "/assets/app.css", "/api/hello"] {
         assert_eq!(hub.get(target).status, 200);
+    }
+    let html = String::from_utf8(hub.get("/").body).unwrap();
+    assert_eq!(html.matches("data-page=").count(), 2);
+    assert!(html.contains("data-page=\"rooms\""));
+    assert!(html.contains("data-page=\"questions\""));
+    assert!(html.contains("aria-label=\"部屋の条件\""));
+    assert!(html.contains("aria-label=\"確認事項の条件\""));
+    for id in [
+        "scope-filter",
+        "qstate-filter",
+        "question-query",
+        "qsort-filter",
+        "question-summary",
+        "questions-pane",
+        "question-list",
+        "files-pane",
+        "room-detail",
+        "questions-collapse",
+        "questions-expand",
+        "questions-restore",
+        "files-collapse",
+        "files-expand",
+        "files-restore",
+    ] {
+        assert!(html.contains(&format!("id=\"{id}\"")), "配信する HTML に {id} がありません");
     }
     for name in ["README.md", "outputs/report.html", "docs/a.md", "docs/image.svg", "QUESTIONS.md"] {
         assert_eq!(hub.get(&format!("{prefix}{name}")).status, 200);
