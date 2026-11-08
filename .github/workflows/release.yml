@@ -114,4 +114,8 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           tag="$TAG"
-          gh release create "$tag" --title "$tag" --generate-notes dist/*
+          # v0.2.0-beta.1 のように - を含むタグは、プレリリースとして公開し、最新版にしない。
+          case "$tag" in
+            *-*) gh release create "$tag" --title "$tag" --generate-notes --prerelease --latest=false dist/* ;;
+            *) gh release create "$tag" --title "$tag" --generate-notes dist/* ;;
+          esac
