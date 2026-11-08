@@ -1,7 +1,9 @@
-//! ソケットを使わない要求の振り分け。ディスクは読むだけで、応答を組み立てる。
+//! ソケットを使わない要求の振り分けと、回答の追記。
 
 use super::http::{self, Body, Request, Response};
 use super::{State, listing, markdown, paths};
+use crate::questions::{self, AnswerError, AnswerRequest};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -90,21 +92,29 @@ fn summaries(state: &State, params: &Parameters) -> Result<(Vec<Value>, String),
     Ok((rooms, label))
 }
 
-pub fn handle(state: &State, request: &Request) -> Response {
+pub fn validate_host(state: &State, request: &Request) -> Result<(), u16> {
     let hosts: Vec<_> = request.headers("host").collect();
     let host_ok = hosts.len() == 1
         && (hosts[0] == format!("127.0.0.1:{}", state.port) || hosts[0] == format!("localhost:{}", state.port));
-    let result = if !host_ok {
-        Err(421)
-    } else if request.method != "GET" {
-        Err(405)
+    if host_ok { Ok(()) } else { Err(421) }
+}
+
+pub fn request_error(request: &Request, status: u16) -> Response {
+    let response = if request.method == "POST" && request.target.split('?').next() == Some("/api/answers") {
+        json_error(status, json!({"error": http::error_message(status)})).header("Cache-Control", "no-store")
     } else {
-        get(state, &request.target)
+        Response::error(status)
     };
-    let response = match result {
-        Ok(response) => response.header("Cache-Control", "no-store"),
-        Err(status) => Response::error(status),
-    };
+    isolation_headers(request, response)
+}
+
+fn json_error(status: u16, value: Value) -> Response {
+    let mut response = json_response(value);
+    response.status = status;
+    response
+}
+
+fn isolation_headers(request: &Request, response: Response) -> Response {
     if request.target.starts_with("/api/") || request.target.starts_with("/assets/") {
         response.header("Cross-Origin-Resource-Policy", "same-origin")
     } else {
@@ -112,11 +122,99 @@ pub fn handle(state: &State, request: &Request) -> Response {
     }
 }
 
+pub fn handle(state: &State, request: &Request) -> Response {
+    let result = if let Err(status) = validate_host(state, request) {
+        Err(status)
+    } else if request.method == "POST" && request.target.split('?').next() == Some("/api/answers") {
+        post_answers(state, request)
+    } else if request.method != "GET" {
+        Err(405)
+    } else {
+        get(state, &request.target)
+    };
+    let response = match result {
+        Ok(response) => response.header("Cache-Control", "no-store"),
+        Err(status) => return request_error(request, status),
+    };
+    isolation_headers(request, response)
+}
+
+fn write_allowed(state: &State, request: &Request) -> bool {
+    fn single<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
+        let mut values = request.headers.iter().filter(|(key, _)| key.eq_ignore_ascii_case(name));
+        let (_, value) = values.next()?;
+        if values.next().is_some() { None } else { Some(value) }
+    }
+    let origin_ok = single(request, "origin").is_some_and(|origin| {
+        origin == format!("http://127.0.0.1:{}", state.port) || origin == format!("http://localhost:{}", state.port)
+    });
+    let content_type_ok = single(request, "content-type").is_some_and(|content_type| {
+        content_type.split(';').next().is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+    });
+    let token_ok = !state.token.is_empty() && single(request, "x-workroom-token") == Some(state.token.as_str());
+    let fetch_ok =
+        request.headers("sec-fetch-site").next().is_none() || single(request, "sec-fetch-site") == Some("same-origin");
+    origin_ok && content_type_ok && token_ok && fetch_ok
+}
+
+fn post_answers(state: &State, request: &Request) -> Result<Response, u16> {
+    if !write_allowed(state, request) {
+        return Err(403);
+    }
+    #[derive(Deserialize)]
+    struct Submission {
+        room: String,
+        answers: Vec<Value>,
+    }
+    let submission: Submission = serde_json::from_slice(&request.body).map_err(|_| 400u16)?;
+    let room = paths::room_path(&state.settings.root, &submission.room)?;
+    let mut answers = Vec::with_capacity(submission.answers.len());
+    for value in submission.answers {
+        let id = value.get("id").and_then(Value::as_str).map(str::to_owned);
+        let parsed: AnswerRequest = match serde_json::from_value(value) {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                let mut error = json!({"error": "回答の形式が不正です"});
+                if let Some(id) = id {
+                    error["id"] = json!(id);
+                }
+                return Ok(json_error(400, error));
+            }
+        };
+        answers.push(parsed);
+    }
+    match questions::answer(&room, answers) {
+        Ok(sent) => {
+            // 追記によるサイズの変化を既存のキャッシュが検知し、読み直す。
+            Ok(json_response(json!({"questions": listing::questions(state, &submission.room, &room), "sent": sent})))
+        }
+        Err(AnswerError::Invalid { id, message }) => {
+            let mut error = json!({"error": message});
+            if let Some(id) = id {
+                error["id"] = json!(id);
+            }
+            Ok(json_error(422, error))
+        }
+        Err(AnswerError::TooLarge { id }) => {
+            Ok(json_error(413, json!({"error": "回答の本文は64 KiB以内で指定してください", "id": id})))
+        }
+        Err(AnswerError::Withdrawn { id, reason, successor }) => Ok(json_error(
+            409,
+            json!({"error": "確認事項は取り下げ済みです", "id": id, "state": "withdrawn", "reason": reason, "successor": successor}),
+        )),
+        Err(AnswerError::Storage(error)) => {
+            eprintln!("回答を追記できません: {error:#}");
+            Err(500)
+        }
+    }
+}
+
 fn get(state: &State, target: &str) -> Result<Response, u16> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let params = parameters(query)?;
     let response = match path {
-        "/" => Response::bytes(200, "text/html; charset=utf-8", INDEX).header("Content-Security-Policy", APP_CSP),
+        "/" => Response::bytes(200, "text/html; charset=utf-8", INDEX.replace("{{WORKROOM_TOKEN}}", &state.token))
+            .header("Content-Security-Policy", APP_CSP),
         "/assets/app.js" => Response::bytes(200, "text/javascript; charset=utf-8", APP_JS),
         "/assets/app.css" => Response::bytes(200, "text/css; charset=utf-8", APP_CSS),
         "/api/hello" => json_response(json!({"app": "workroom", "root_hash": state.root_hash})),
@@ -237,6 +335,8 @@ mod tests {
             method: "GET".into(),
             target: target.into(),
             headers: vec![("host".into(), "127.0.0.1:49123".into())],
+            body: Vec::new(),
+            head_bytes: 0,
         }
     }
 

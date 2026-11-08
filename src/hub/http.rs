@@ -1,7 +1,7 @@
 //! 接続ごとに1要求だけを読む、小さな HTTP/1.1 の処理。
 
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 
 pub const MAX_HEADERS: usize = 16 * 1024;
 pub const MAX_BODY: u64 = 1024 * 1024;
@@ -11,6 +11,8 @@ pub struct Request {
     pub method: String,
     pub target: String,
     pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    pub head_bytes: usize,
 }
 
 impl Request {
@@ -48,21 +50,28 @@ impl Response {
     }
 
     pub fn error(status: u16) -> Self {
-        let message = match status {
-            400 => "要求の形式が不正です",
-            404 => "見つかりません",
-            405 => "GET だけを受け付けます",
-            408 => "要求の読み取りがタイムアウトしました",
-            413 => "本文が大きすぎます",
-            421 => "Host が一致しません",
-            431 => "ヘッダが大きすぎます",
-            503 => "接続が混み合っています",
-            _ => "処理できませんでした",
-        };
-        let response = Self::bytes(status, "text/plain; charset=utf-8", format!("{message}\n"))
+        let response = Self::bytes(status, "text/plain; charset=utf-8", format!("{}\n", error_message(status)))
             .header("Content-Security-Policy", "sandbox; default-src 'none'")
             .header("Cache-Control", "no-store");
         if status == 405 { response.header("Allow", "GET") } else { response }
+    }
+}
+
+pub fn error_message(status: u16) -> &'static str {
+    match status {
+        400 => "要求の形式が不正です",
+        403 => "回答の送信に必要なヘッダが一致しません",
+        404 => "見つかりません",
+        405 => "GET だけを受け付けます",
+        408 => "要求の読み取りがタイムアウトしました",
+        409 => "確認事項は取り下げ済みです",
+        411 => "Content-Length が必要です",
+        413 => "本文が大きすぎます",
+        421 => "Host が一致しません",
+        422 => "回答の内容が不正です",
+        431 => "ヘッダが大きすぎます",
+        503 => "接続が混み合っています",
+        _ => "処理できませんでした",
     }
 }
 
@@ -70,13 +79,12 @@ fn token(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
 }
 
-pub fn read_request(reader: impl Read) -> Result<Request, u16> {
-    let mut reader = BufReader::new(reader);
+pub fn read_head(reader: &mut impl BufRead) -> Result<Request, u16> {
     let mut head = Vec::new();
     loop {
         let start = head.len();
         let read =
-            (&mut reader).take((MAX_HEADERS + 1 - start) as u64).read_until(b'\n', &mut head).map_err(|error| {
+            (&mut *reader).take((MAX_HEADERS + 1 - start) as u64).read_until(b'\n', &mut head).map_err(|error| {
                 if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) {
                     408u16
                 } else {
@@ -114,7 +122,16 @@ pub fn read_request(reader: impl Read) -> Result<Request, u16> {
         }
         headers.push((name.to_ascii_lowercase(), value.trim_matches([' ', '\t']).to_string()));
     }
-    let request = Request { method: method.to_string(), target: target.to_string(), headers };
+    Ok(Request {
+        method: method.to_string(),
+        target: target.to_string(),
+        headers,
+        body: Vec::new(),
+        head_bytes: head.len(),
+    })
+}
+
+pub fn read_body(reader: impl Read, request: &mut Request) -> Result<(), u16> {
     if request.headers("transfer-encoding").next().is_some() {
         return Err(400);
     }
@@ -122,16 +139,35 @@ pub fn read_request(reader: impl Read) -> Result<Request, u16> {
     if lengths.len() > 1 {
         return Err(400);
     }
-    if let Some(length) = lengths.first() {
+    let length = if let Some(length) = lengths.first() {
         if length.is_empty() || !length.bytes().all(|b| b.is_ascii_digit()) {
             return Err(400);
         }
         let length = length.parse::<u64>().map_err(|_| 413u16)?;
-        if length > MAX_BODY {
+        if length > MAX_BODY.saturating_sub(request.head_bytes as u64) {
             return Err(413);
         }
+        Some(length)
+    } else {
+        None
+    };
+    if request.method == "POST" && request.target.split('?').next() == Some("/api/answers") {
+        let length = length.ok_or(411u16)?;
+        reader.take(length).read_to_end(&mut request.body).map_err(|error| {
+            if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) { 408u16 } else { 400u16 }
+        })?;
+        if request.body.len() as u64 != length {
+            return Err(400);
+        }
     }
-    // 読み取り専用のハブでは本文を使わない。POST は経路を作らず 405 で閉じる。
+    Ok(())
+}
+
+#[cfg(test)]
+fn read_request(reader: impl Read) -> Result<Request, u16> {
+    let mut reader = std::io::BufReader::new(reader);
+    let mut request = read_head(&mut reader)?;
+    read_body(reader, &mut request)?;
     Ok(request)
 }
 
@@ -139,11 +175,15 @@ pub fn write_response(mut writer: impl Write, response: Response) -> io::Result<
     let reason = match response.status {
         200 => "OK",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
+        409 => "Conflict",
+        411 => "Length Required",
         413 => "Content Too Large",
         421 => "Misdirected Request",
+        422 => "Unprocessable Content",
         431 => "Request Header Fields Too Large",
         503 => "Service Unavailable",
         _ => "Internal Server Error",
@@ -234,5 +274,34 @@ mod tests {
         assert!(text.contains("Allow: GET\r\n"));
         let (head, body) = text.split_once("\r\n\r\n").unwrap();
         assert!(head.contains(&format!("Content-Length: {}", body.len())));
+    }
+
+    #[test]
+    fn reads_exact_content_length_with_buffered_body_and_rejects_short_bodies() {
+        let body = "日本語の回答";
+        let raw = format!("POST /api/answers HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}余分なデータ", body.len());
+        assert_eq!(read_request(raw.as_bytes()).unwrap().body, body.as_bytes());
+        assert_eq!(read_request(b"POST /api/answers HTTP/1.1\r\n\r\n".as_slice()).unwrap_err(), 411);
+        assert_eq!(
+            read_request(b"POST /api/answers HTTP/1.1\r\nContent-Length: 3\r\n\r\n{}".as_slice()).unwrap_err(),
+            400
+        );
+        // 1 MiB の本文だけでなく、要求行とヘッダも全体の上限に含める。
+        assert_eq!(
+            read_request(b"POST /api/answers HTTP/1.1\r\nContent-Length: 1048576\r\n\r\n".as_slice()).unwrap_err(),
+            413
+        );
+    }
+
+    #[test]
+    fn body_timeouts_keep_the_existing_408_status() {
+        struct Timeout;
+        impl Read for Timeout {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::TimedOut.into())
+            }
+        }
+        let head = b"POST /api/answers HTTP/1.1\r\nContent-Length: 2\r\n\r\n";
+        assert_eq!(read_request(head.as_slice().chain(Timeout)).unwrap_err(), 408);
     }
 }

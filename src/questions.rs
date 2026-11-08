@@ -1,4 +1,4 @@
-//! 確認事項の記録。解析・状態の判定・追記は、CLI と将来のハブで共有する。
+//! 確認事項の記録。解析・状態の判定・追記は、CLI とハブで共有する。
 
 use anyhow::{Context, Result, bail};
 use chrono::{Local, NaiveDate, SecondsFormat};
@@ -419,32 +419,138 @@ pub fn append<T>(
         }
     })?;
     if let Some(event) = event {
-        let path = dir.join(QUESTIONS);
         let mut bytes = serde_json::to_vec(&event)?;
         bytes.push(b'\n');
-        let mut last = [0u8];
-        match File::open(&path) {
-            Ok(mut file) => {
-                use std::io::{Seek, SeekFrom};
-                if file.metadata()?.len() > 0 {
-                    file.seek(SeekFrom::End(-1))?;
-                    file.read_exact(&mut last)?;
-                    if last[0] != b'\n' {
-                        bytes.insert(0, b'\n');
-                    }
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).context("追記先を読めません"),
-        }
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .with_context(|| format!("追記できません: {}", path.display()))?
-            .write_all(&bytes)?;
+        append_bytes(&dir.join(QUESTIONS), bytes)?;
     }
     Ok((result, current.warnings))
+}
+
+/// 呼び出し元が対象のロックを保持し、全件の検査とシリアライズを終えてから呼ぶ。
+fn append_bytes(path: &Path, mut bytes: Vec<u8>) -> Result<()> {
+    let mut last = [0u8];
+    match File::open(path) {
+        Ok(mut file) => {
+            use std::io::{Seek, SeekFrom};
+            if file.metadata()?.len() > 0 {
+                file.seek(SeekFrom::End(-1))?;
+                file.read_exact(&mut last)?;
+                if last[0] != b'\n' {
+                    bytes.insert(0, b'\n');
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).context("追記先を読めません"),
+    }
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("追記できません: {}", path.display()))?
+        .write_all(&bytes)?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnswerRequest {
+    #[serde(default)]
+    pub id: String,
+    pub kind: String,
+    pub text: String,
+}
+
+#[derive(Debug)]
+pub enum AnswerError {
+    Invalid { id: Option<String>, message: &'static str },
+    TooLarge { id: String },
+    Withdrawn { id: String, reason: String, successor: Option<String> },
+    Storage(anyhow::Error),
+}
+
+impl From<anyhow::Error> for AnswerError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Storage(error)
+    }
+}
+
+/// 回答だけを直列化する。質問の書き手とは別のロックで、追記直前の両ファイルを読む。
+pub fn answer(dir: &Path, answers: Vec<AnswerRequest>) -> std::result::Result<Vec<String>, AnswerError> {
+    let _guard = Lock::acquire(&dir.join(format!(".{ANSWERS}.lock")))?;
+    // GET と同様に、部屋の外を指す JSONL を読み書きしない。
+    let canonical = dir.canonicalize().context("部屋を確認できません")?;
+    for name in [QUESTIONS, ANSWERS] {
+        let path = dir.join(name);
+        if std::fs::symlink_metadata(&path).is_ok() {
+            let target = path.canonicalize().context("確認事項のファイルを確認できません")?;
+            if !target.starts_with(&canonical) || !target.is_file() {
+                return Err(anyhow::anyhow!("部屋の外や通常のファイルでない記録は読み書きできません: {name}").into());
+            }
+        }
+    }
+    let current = read(dir)?;
+    if answers.is_empty() {
+        return Err(AnswerError::Invalid { id: None, message: "回答を1件以上指定してください" });
+    }
+    let mut sent = BTreeSet::new();
+    let mut records = Vec::with_capacity(answers.len());
+    let at = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
+    for request in answers {
+        let invalid = |message| AnswerError::Invalid { id: Some(request.id.clone()), message };
+        let item = current
+            .items
+            .get(&request.id)
+            .filter(|q| q.ask.is_some())
+            .ok_or_else(|| invalid("確認事項が見つかりません"))?;
+        if item.duplicate_ask {
+            return Err(invalid("ask が重複しているため回答できません"));
+        }
+        if let Some(Event { kind: EventKind::Withdraw { reason, successor }, .. }) = item.withdrawals.last() {
+            return Err(AnswerError::Withdrawn {
+                id: request.id,
+                reason: reason.clone(),
+                successor: successor.clone(),
+            });
+        }
+        let kind = match request.kind.as_str() {
+            "answer" => AnswerKind::Answer,
+            "not_needed" => AnswerKind::NotNeeded,
+            _ => return Err(invalid("kind は answer か not_needed を指定してください")),
+        };
+        if !sent.insert(request.id.clone()) {
+            return Err(invalid("同じ ID が1回の送信に2つあります"));
+        }
+        if request.text.len() > 64 * 1024 {
+            return Err(AnswerError::TooLarge { id: request.id });
+        }
+        let normalized = request.text.replace("\r\n", "\n").replace('\r', "\n");
+        let lines: Vec<_> = normalized.split('\n').collect();
+        let start = lines.iter().position(|line| !line.trim().is_empty()).unwrap_or(lines.len());
+        let end = lines.iter().rposition(|line| !line.trim().is_empty()).map_or(start, |i| i + 1);
+        let text = lines[start..end].join("\n");
+        if kind == AnswerKind::Answer && text.is_empty() {
+            return Err(invalid("回答の本文を入力してください"));
+        }
+        let event = item.ask.as_ref().unwrap();
+        records.push(Answer {
+            v: 1,
+            record_type: "answer".into(),
+            id: request.id,
+            n: item.answers.len() + 1,
+            recorded_n: None,
+            at: at.clone(),
+            kind,
+            text,
+            question: Snapshot { ask: item.content().clone(), by: event.by.clone(), asked_at: Some(event.at.clone()) },
+        });
+    }
+    let mut bytes = Vec::new();
+    for record in &records {
+        serde_json::to_writer(&mut bytes, record).context("回答を JSON に変換できません")?;
+        bytes.push(b'\n');
+    }
+    append_bytes(&dir.join(ANSWERS), bytes)?;
+    Ok(records.into_iter().map(|record| record.id).collect())
 }
 
 pub fn ask(dir: &Path, date: NaiveDate, mut ask: Ask, by: Option<String>) -> Result<((String, usize), Vec<Warning>)> {
@@ -778,5 +884,103 @@ mod tests {
         drop(lock);
         drop(waiter.join().unwrap());
         assert!(!path.exists());
+    }
+
+    fn request(id: &str, text: &str) -> AnswerRequest {
+        AnswerRequest { id: id.into(), kind: "answer".into(), text: text.into() }
+    }
+
+    #[test]
+    fn answer_append_preserves_partial_lines_counts_records_and_copies_the_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ask = event("ask");
+        ask["background"] = json!("質問の背景\n2行目");
+        ask["origin"] = json!("Q-20261105-01");
+        write_values(dir.path(), QUESTIONS, &[ask]);
+        let original = format!("{}\n壊れた末尾", answer(9, "answer"));
+        std::fs::write(dir.path().join(ANSWERS), &original).unwrap();
+        assert_eq!(super::answer(dir.path(), vec![request(ID, &"a".repeat(65536))]).unwrap(), [ID]);
+        let bytes = std::fs::read(dir.path().join(ANSWERS)).unwrap();
+        assert!(bytes.starts_with(original.as_bytes()));
+        let added = std::str::from_utf8(&bytes[original.len()..]).unwrap();
+        assert!(added.starts_with('\n'));
+        assert!(added.ends_with('\n'));
+        let record: Value = serde_json::from_str(added.trim()).unwrap();
+        assert_eq!(record["n"], 2);
+        assert_eq!(record["text"].as_str().unwrap().len(), 65536);
+        assert_eq!(record["question"]["background"], "質問の背景\n2行目");
+        assert_eq!(record["question"]["origin"], "Q-20261105-01");
+        assert_eq!(read(dir.path()).unwrap().items[ID].answers.len(), 2);
+        assert!(!dir.path().join(".ANSWERS.jsonl.lock").exists());
+    }
+
+    #[test]
+    fn concurrent_answers_get_distinct_contiguous_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        write_values(dir.path(), QUESTIONS, &[event("ask")]);
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let path = dir.path().to_path_buf();
+                std::thread::spawn(move || super::answer(&path, vec![request(ID, "並行した回答")]).unwrap())
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let data = read(dir.path()).unwrap();
+        assert!(data.warnings.is_empty());
+        assert_eq!(data.items[ID].answers.iter().map(|a| a.n).collect::<Vec<_>>(), (1..=8).collect::<Vec<_>>());
+        assert!(!dir.path().join(".ANSWERS.jsonl.lock").exists());
+    }
+
+    #[test]
+    fn answers_reread_questions_after_acquiring_the_lock_and_reject_orphan_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        write_values(dir.path(), QUESTIONS, &[event("ask")]);
+        let lock = Lock::acquire(&dir.path().join(".ANSWERS.jsonl.lock")).unwrap();
+        let path = dir.path().to_path_buf();
+        let worker = std::thread::spawn(move || super::answer(&path, vec![request(ID, "送信中の回答")]));
+        write_values(dir.path(), QUESTIONS, &[event("ask"), event("withdraw")]);
+        drop(lock);
+        assert!(matches!(worker.join().unwrap(), Err(AnswerError::Withdrawn { .. })));
+        assert!(!dir.path().join(ANSWERS).exists());
+        assert!(!dir.path().join(".ANSWERS.jsonl.lock").exists());
+        std::fs::remove_file(dir.path().join(QUESTIONS)).unwrap();
+        write_values(dir.path(), ANSWERS, &[answer(1, "answer")]);
+        let before = std::fs::read(dir.path().join(ANSWERS)).unwrap();
+        assert!(matches!(
+            super::answer(dir.path(), vec![request(ID, "起票のない項目")]),
+            Err(AnswerError::Invalid { .. })
+        ));
+        assert_eq!(std::fs::read(dir.path().join(ANSWERS)).unwrap(), before);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn answers_do_not_follow_jsonl_links_outside_the_room() {
+        let dir = tempfile::tempdir().unwrap();
+        let room = dir.path().join("room");
+        std::fs::create_dir(&room).unwrap();
+        let outside = dir.path().join("outside.jsonl");
+        std::fs::write(&outside, "部屋の外の内容\n").unwrap();
+        #[cfg(unix)]
+        let symlink = |from: &Path, to: &Path| std::os::unix::fs::symlink(from, to);
+        #[cfg(windows)]
+        let symlink = |from: &Path, to: &Path| std::os::windows::fs::symlink_file(from, to);
+        for name in [QUESTIONS, ANSWERS] {
+            let link = room.join(name);
+            if let Err(error) = symlink(&outside, &link) {
+                #[cfg(windows)]
+                if error.kind() == std::io::ErrorKind::PermissionDenied || error.raw_os_error() == Some(1314) {
+                    eprintln!("シンボリックリンクの作成権限がないためスキップ: {error}");
+                    return;
+                }
+                panic!("シンボリックリンクを作れません: {error}");
+            }
+            assert!(matches!(super::answer(&room, vec![request(ID, "回答")]), Err(AnswerError::Storage(_))));
+            assert_eq!(std::fs::read_to_string(&outside).unwrap(), "部屋の外の内容\n");
+            assert!(!room.join(".ANSWERS.jsonl.lock").exists());
+            std::fs::remove_file(link).unwrap();
+        }
     }
 }

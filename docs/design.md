@@ -95,7 +95,7 @@ Git 管理するほどでもない調査・作業の場所を、すぐに作れ�
 ## 確認事項（QUESTIONS.jsonl / ANSWERS.jsonl）
 
 ユーザーへの質問を ID 付きで起票し、回答の反映と取り下げを記録する。エージェントのシェルにラッパー関数がない場合もあるため、テンプレートと実行例では `workroom q` と書く。`wk q` でも実行できる。
-解析・状態の判定・追記・ロック・採番は `src/questions.rs` にまとめる。成果物ハブもこのモデルを読む。ハブからの回答の書き込みはまだ実装しない。
+解析・状態の判定・追記・ロック・採番は `src/questions.rs` にまとめる。成果物ハブもこのモデルを読み、回答を `ANSWERS.jsonl` に追記する。
 
 ### ファイルとスキーマ
 
@@ -171,7 +171,7 @@ ID は `Q-YYYYMMDD-NN`。日付は `room::today(settings)`（`day_start_hour` �
 
 ## 成果物ハブ
 
-部屋を横断して、成果物と確認事項をブラウザの1タブで読む。LLM は使わない。PR2 は読み取りだけで、GET で作業ルート・設定・状態ディレクトリに何も作らず、`--cwd-file` にも書かない。静的ファイルは `include_str!` で埋め込み、一覧とキャッシュはメモリにだけ持つ。
+部屋を横断して、成果物と確認事項をブラウザの1タブで読む。LLM は使わない。GET で作業ルート・設定・状態ディレクトリに何も作らず、`--cwd-file` にも書かない。ハブが永続的に書き込むのは `ANSWERS.jsonl` への追記だけ（追記中は部屋に一時ロックを置く）。`QUESTIONS.jsonl` は `workroom q` だけが書く。静的ファイルは `include_str!` で埋め込み、一覧とキャッシュはメモリにだけ持つ。PR3a はサーバの回答 API までで、画面のフォームは PR3c。
 
 ### 起動と HTTP
 
@@ -188,7 +188,7 @@ ID は `Q-YYYYMMDD-NN`。日付は `room::today(settings)`（`day_start_hour` �
 - 待ち受けは `127.0.0.1` だけ。ポートは `--port`、なければ設定 `hub_port`（既定 47100）。0 は OS に選ばせる。Host と CSP には `listener.local_addr()` の実際のポートを使う。
 - 標準出力の1行目は `http://127.0.0.1:<port>/` だけで、すぐ flush する。案内は標準エラー。既定では OS のブラウザを開き、`--no-open` で抑止する。終了は `Ctrl+C`。
 - ポートが使用中なら、2秒のタイムアウトで `/api/hello` を照会する。同じ作業ルートのハブなら URL を表示して開き、終了する。異なるルートや別のサーバなら `--port` を案内してエラーにする。hello はアプリ名と正規化したルートの SHA-256 だけを返す。
-- 標準ライブラリの `TcpListener` で接続ごとにスレッドを作る。同時32接続までで、超過は503。読み取り10秒・書き込み60秒、要求行を含むヘッダは16 KiB、宣言された本文は1 MiBまで（431 / 413）。本文を使う経路はなく、GET 以外は405。Transfer-Encoding と重複した Content-Length は受け付けない。
+- 標準ライブラリの `TcpListener` で接続ごとにスレッドを作る。同時32接続までで、超過は503。読み取り10秒・書き込み60秒、要求行を含むヘッダは16 KiB、ヘッダと宣言された本文の合計は1 MiBまで（431 / 413）。`POST /api/answers` の本文は Content-Length の長さだけ読み、欠落は411、途中で終われば400。Transfer-Encoding と重複した Content-Length は受け付けない。それ以外の GET 以外の要求は従来どおり405で閉じ、本文は読まない。
 - 応答は HTTP/1.1・`Connection: close`・Content-Length 付き。ファイルはメタデータの長さを上限に `io::copy` で流す。Range・keep-alive・chunked・TLS は持たない。要求ログは出さず、エラーだけを標準エラーに出す。
 
 ### URL と読み取り API
@@ -206,6 +206,22 @@ ID は `Q-YYYYMMDD-NN`。日付は `room::today(settings)`（`day_start_hour` �
 
 room は部分一致を使わない。URL を `/` で区切ってから各要素を1回だけパーセントデコードし、不正な UTF-8 は400にする。空・ドットで始まる名前・`..`・区切り文字・バックスラッシュ・コロン・制御文字・末尾のドットや空白・Windows の予約名は404。
 `room::locate` で `scan` と同じ部屋・案件階層を判定し、README は読まない。案件名は `validate_project` に通さず、手作りの案件も受け入れる。部屋と対象ファイルを canonicalize し、部屋の外を指すシンボリックリンク等は404にする。README と JSONL の読み取りでも部屋の外を指すものを拒否する。
+
+### 回答の API
+
+`POST /api/answers` は次の JSON を受け付ける。room の解決は GET の room パラメータと同じ関数を使い、解決できなければ404。
+
+```json
+{"room":"EXAMPLE/2026-11-03-調査","answers":[{"id":"Q-20261106-01","kind":"answer","text":"表でよい"},{"id":"Q-20261106-03","kind":"not_needed","text":""}]}
+```
+
+- Host の検査を本文の読み取りより先に行う。書き込みには、Origin が実際のポートの `http://127.0.0.1:<port>` か `http://localhost:<port>`、Content-Type が `application/json`（charset 等の引数は許す）、X-Workroom-Token が起動ごとのトークンと一致することが必要。Sec-Fetch-Site があれば `same-origin` だけを許す。欠落した Origin、`null`、空や欠落したトークン、書き込み検査の4ヘッダの重複も403で拒否する。Sec-Fetch-Site の欠落は許す。
+- トークンは `RandomState` の64 bitのハッシュ2つをつないだ16進32文字。`GET /` の HTML を要求ごとに組み立て、`<meta name="workroom-token" content="…">` に埋め込む。URL や API 応答には載せない。CSP 等のヘッダは従来どおり。主な守りは sandbox・Origin・Host で、トークンは補助とする。
+- OPTIONS は405。すべての応答で `Access-Control-Allow-*` を返さない。
+- `.ANSWERS.jsonl.lock` を取得し、両方の JSONL を読み直して全件を検査する。存在しない ID・起票のない ID・重複した ask・不正な kind・整えた後に空の通常回答・同じ ID の重複・空の answers は422。取り下げ済みは409で、ID・現在の state・理由・後継を返す。整える前の本文の UTF-8 が64 KiBを超えると413。壊れた JSON や型の不一致は400。
+- 本文は CRLF と CR を LF にそろえ、前後の空行（空白だけの行も含む）を削る。中の空行、字下げ、行末の空白、記号は保つ。`not_needed` の本文は空でもよい。各レコードに回答件数＋1の n、既存の q コマンドと同じローカル日時（RFC 3339・秒まで）、ask の写しを付ける。
+- 全件を検査・JSON 化してから、末尾に LF がなければ区切りを足し、1回の `write_all` でまとめて追記する。検査に1件でも失敗すると1件も書かない。UTF-8・BOM なし・LF で、日本語はエスケープしない。解決済みへの追加回答も受け付け、回答済み・未反映に戻す。
+- 成功は200で、`{"questions": <GET /api/questions と同じモデル>, "sent": [<送信した ID>]}` を返す。エラーは日本語の error と、該当する場合は id を持つ JSON。API と同じ `Cache-Control: no-store`・CORP・nosniff を付ける。未知の POST の URL は405を維持する。
 
 ### 表示・キャッシュ
 
@@ -239,7 +255,7 @@ Markdown は表・取り消し線・タスクリスト・脚注に対応する�
 md.css は sandbox からの CORP 制限を避けるため文書内の style に埋め込み、SHA-256 を CSP に入れる。
 
 HTTP はローカル専用で必要な機能が少ないため、標準ライブラリで実装し依存を増やさない。Markdown は pulldown-cmark（default-features を無効、html だけ）を使い、サーバ側の無害化を Rust の単体テストで固定する。同梱 JavaScript ライブラリの更新やライセンス管理も不要になる。
-PR3 で回答の送信・起動ごとのトークン・Origin / Content-Type / Sec-Fetch-Site 検査を加える。PR2 には POST の経路もトークンの埋め込みも作らない。OS で開く API とボタンは PR4。
+PR3a で回答の API と検査を実装した。PR3b で画面の整理と確認事項・ファイルの左右の欄、PR3c で回答のフォームと下書きを加える。OS で開く API とボタンは PR4。
 
 ## TUI ピッカー（try-rs を参考に）
 
