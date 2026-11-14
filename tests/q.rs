@@ -214,6 +214,28 @@ fn handwritten_multiline_ask_is_read_without_warnings() {
 }
 
 #[test]
+fn handwritten_questions_with_cr_or_leading_newlines_are_normalized_for_terminal_headings() {
+    let env = Env::new();
+    let events: Vec<_> = ["\n\r\n 先頭が改行の質問\r\n2行目 ", "上書き前\r単独の CR\r\n3行目"]
+        .iter()
+        .enumerate()
+        .map(|(i, question)| {
+            json!({"v":1,"type":"ask","id":format!("Q-20261106-0{}", i + 1),"at":"2026-11-06T10:00:00+09:00","question":question})
+                .to_string()
+        })
+        .collect();
+    fs::write(env.room.join("QUESTIONS.jsonl"), events.join("\n") + "\n").unwrap();
+    let before = fs::read(env.room.join("QUESTIONS.jsonl")).unwrap();
+    let out = env.run(&["show"]);
+    success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("## Q-20261106-01 先頭が改行の質問\n  2行目\n- 状態"), "{text}");
+    assert!(text.contains("## Q-20261106-02 上書き前\n  単独の CR\n  3行目\n- 状態"), "{text}");
+    assert!(!text.contains('\r'));
+    assert_eq!(fs::read(env.room.join("QUESTIONS.jsonl")).unwrap(), before);
+}
+
+#[test]
 fn parallel_ask_processes_get_distinct_consecutive_ids() {
     let env = Env::new();
     let children: Vec<_> = (0..8)

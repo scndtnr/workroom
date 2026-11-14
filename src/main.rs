@@ -618,9 +618,11 @@ fn print_q_text(text: &str) {
 }
 
 fn print_q_heading(q: &questions::Question) {
-    let question = &q.content().question;
+    // 手で書いた JSONL の質問は ask でそろえていないので、表示の前に改行をそろえる。
+    let question = q.content().question.replace("\r\n", "\n").replace('\r', "\n");
+    let question = question.trim();
     let (first, rest) = question.split_once('\n').unwrap_or((question, ""));
-    println!("## {} {}", q.id, first.trim_end_matches('\r'));
+    println!("## {} {first}", q.id);
     print_q_text(rest);
 }
 

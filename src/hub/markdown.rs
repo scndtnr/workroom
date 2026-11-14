@@ -278,6 +278,18 @@ mod tests {
     }
 
     #[test]
+    fn urls_between_inline_html_tags_are_linked_and_the_tags_stay_escaped_text() {
+        let output =
+            render(b"\xe6\x96\x87 <b>https://example.com/</b> <script>https://example.com/s</script>", None, None);
+        assert!(output.contains(
+            "&lt;b&gt;<a href=\"https://example.com/\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/</a>&lt;/b&gt;"
+        ));
+        assert!(output.contains("&lt;script&gt;"));
+        assert!(!output.contains("<b>"));
+        assert!(!output.contains("<script>"));
+    }
+
+    #[test]
     fn skips_code_link_labels_image_alt_and_escaped_raw_html() {
         for input in [
             "```text\nhttps://example.com/code\n```",
