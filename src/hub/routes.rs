@@ -342,6 +342,13 @@ fn serve_file(state: &State, encoded: &str, params: &Parameters) -> Result<Respo
         file.rewind().map_err(|_| 500u16)?;
     }
     let content_type = file_type(&path, &mut file).map_err(|_| 500u16)?;
+    let content_type = if params.get("raw").is_some_and(|v| v == "1")
+        && matches!(content_type, "text/html; charset=utf-8" | "image/svg+xml")
+    {
+        "text/plain; charset=utf-8"
+    } else {
+        content_type
+    };
     file.rewind().map_err(|_| 500u16)?;
     let policy = match content_type {
         "text/html; charset=utf-8" => format!(
@@ -453,6 +460,49 @@ mod tests {
     }
 
     #[test]
+    fn raw_html_htm_and_svg_are_plain_sandboxed_source_and_other_types_are_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_state(dir.path());
+        let room = dir.path().join("2026-11-02-room");
+        fs::create_dir(&room).unwrap();
+        for (name, source, mime) in [
+            ("a.html", b"<script>location='https://example.com/'</script>".as_slice(), "text/html; charset=utf-8"),
+            ("b.HTM", b"<h1>https://example.com/</h1>", "text/html; charset=utf-8"),
+            ("c.SVG", b"<svg><script>https://example.com/</script></svg>", "image/svg+xml"),
+            ("a.png", b"\x89PNG\r\n\x1a\n", "image/png"),
+            ("a.pdf", b"%PDF-1.4", "application/pdf"),
+            ("a.txt", b"https://example.com/", "text/plain; charset=utf-8"),
+            ("a.bin", b"\0\xff", "application/octet-stream"),
+        ] {
+            fs::write(room.join(name), source).unwrap();
+            let target = format!("/f/2026-11-02-room/{name}");
+            let normal = handle(&state, &request(&target));
+            assert_eq!(header(&normal, "Content-Type"), mime);
+            let normal_csp = header(&normal, "Content-Security-Policy");
+            if mime.starts_with("text/html") {
+                assert!(normal_csp.starts_with("sandbox allow-scripts allow-forms allow-modals allow-popups "));
+            } else if mime == "image/svg+xml" {
+                assert_eq!(normal_csp, "sandbox");
+            }
+            let raw = handle(&state, &request(&format!("{target}?raw=1")));
+            assert_eq!(raw.status, 200);
+            if matches!(mime, "text/html; charset=utf-8" | "image/svg+xml") {
+                assert_eq!(header(&raw, "Content-Type"), "text/plain; charset=utf-8");
+                assert_eq!(header(&raw, "Content-Security-Policy"), "sandbox");
+                assert_eq!(header(&raw, "Content-Disposition"), "");
+            } else {
+                assert_eq!(raw.headers, normal.headers, "{name}");
+            }
+            let Body::File(mut file, length) = raw.body else { panic!("元のファイルを返すこと") };
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, source);
+            assert_eq!(length, source.len() as u64);
+            assert_eq!(handle(&state, &request(&format!("{target}?raw=0"))).headers, normal.headers);
+        }
+    }
+
+    #[test]
     fn raw_and_large_markdown_are_plain_and_bad_paths_and_queries_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let state = super::super::test_state(dir.path());
@@ -462,7 +512,10 @@ mod tests {
         let file = File::create(room.join("large.md")).unwrap();
         file.set_len(markdown::MAX_BYTES + 1).unwrap();
         for target in ["/f/2026-11-02-room/a.md?raw=1", "/f/2026-11-02-room/large.md"] {
-            assert_eq!(header(&handle(&state, &request(target)), "Content-Type"), "text/plain; charset=utf-8");
+            let response = handle(&state, &request(target));
+            assert_eq!(header(&response, "Content-Type"), "text/plain; charset=utf-8");
+            assert_eq!(header(&response, "Content-Security-Policy"), "sandbox");
+            assert!(matches!(response.body, Body::File(_, _)));
         }
         assert_eq!(handle(&state, &request("/f/2026-11-02-room/%2e%2e/a.md")).status, 404);
         assert_eq!(handle(&state, &request("/api/files?room=..%2F2026-11-02-room")).status, 404);

@@ -1,7 +1,8 @@
 //! Markdown をサーバ側で描画し、入力由来の HTML と危険な URL を通さない。
 
-use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd, html};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream, html};
 use sha2::{Digest, Sha256};
+use std::ops::Range;
 use std::path::Path;
 
 pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
@@ -52,6 +53,77 @@ fn allowed_url(url: &str) -> bool {
     }
 }
 
+/// ハブの JavaScript と同じ規則で、ASCII の http(s) URL だけを取り出す。
+fn url_ranges(text: &str) -> Vec<Range<usize>> {
+    let bytes = text.as_bytes();
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < bytes.len() {
+        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+            start += 1;
+            continue;
+        }
+        let prefix_len = if bytes[start..].get(..8).is_some_and(|s| s.eq_ignore_ascii_case(b"https://")) {
+            8
+        } else if bytes[start..].get(..7).is_some_and(|s| s.eq_ignore_ascii_case(b"http://")) {
+            7
+        } else {
+            start += 1;
+            continue;
+        };
+        let content_start = start + prefix_len;
+        let mut end = content_start;
+        let mut balances = [0isize; 3];
+        while let Some(&byte) = bytes.get(end) {
+            if !(b'!'..=b'~').contains(&byte) || b"<>\"`".contains(&byte) {
+                break;
+            }
+            if let Some(index) = b"([{".iter().position(|&b| b == byte) {
+                balances[index] += 1;
+            } else if let Some(index) = b")]}".iter().position(|&b| b == byte) {
+                balances[index] -= 1;
+            }
+            end += 1;
+        }
+        let next = end;
+        while end > content_start {
+            let last = bytes[end - 1];
+            if b".,;:!?'\"".contains(&last) {
+                end -= 1;
+            } else if let Some(index) = b")]}".iter().position(|&b| b == last)
+                && balances[index] < 0
+            {
+                balances[index] += 1;
+                end -= 1;
+            } else {
+                break;
+            }
+        }
+        if end > content_start {
+            ranges.push(start..end);
+        }
+        start = next;
+    }
+    ranges
+}
+
+fn linked_text(text: &str) -> Option<String> {
+    let ranges = url_ranges(text);
+    if ranges.is_empty() {
+        return None;
+    }
+    let mut output = String::new();
+    let mut offset = 0;
+    for range in ranges {
+        output.push_str(&escape(&text[offset..range.start]));
+        let url = escape(&text[range.clone()]);
+        output.push_str(&format!("<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>"));
+        offset = range.end;
+    }
+    output.push_str(&escape(&text[offset..]));
+    Some(output)
+}
+
 pub fn render(bytes: &[u8], theme: Option<&str>, hub_url: Option<&str>) -> String {
     let style = style_text();
     let text = String::from_utf8_lossy(bytes);
@@ -60,8 +132,22 @@ pub fn render(bytes: &[u8], theme: Option<&str>, hub_url: Option<&str>) -> Strin
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_FOOTNOTES;
     let mut links = Vec::new();
     let mut images = Vec::new();
-    let events = Parser::new_ext(text.trim_start_matches('\u{feff}'), options).filter_map(|event| match event {
+    let mut code_blocks = 0;
+    // HTML を Text に置き換える前につなぎ、HTML 由来の文字を URL 変換に渡さない。
+    let parser = TextMergeStream::new(Parser::new_ext(text.trim_start_matches('\u{feff}'), options));
+    let events = parser.filter_map(|event| match event {
         Event::Html(value) | Event::InlineHtml(value) => Some(Event::Text(value)),
+        Event::Text(value) if links.is_empty() && images.is_empty() && code_blocks == 0 => {
+            Some(linked_text(&value).map_or_else(|| Event::Text(value), |html| Event::InlineHtml(html.into())))
+        }
+        Event::Start(Tag::CodeBlock(_)) => {
+            code_blocks += 1;
+            Some(event)
+        }
+        Event::End(TagEnd::CodeBlock) => {
+            code_blocks -= 1;
+            Some(event)
+        }
         Event::Start(Tag::Link { link_type, dest_url, title, .. }) => {
             let dest_url = if link_type == LinkType::Email { format!("mailto:{dest_url}").into() } else { dest_url };
             let allowed = allowed_url(&dest_url);
@@ -127,6 +213,100 @@ fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bare_url_ranges_and_rendering_match_the_hub_cases() {
+        let cases: &[(&str, &[&str])] = &[
+            ("参考：https://example.com/a?b=1&c=2。", &["https://example.com/a?b=1&c=2"]),
+            ("https://example.com/を参照", &["https://example.com/"]),
+            ("（https://example.com/x）", &["https://example.com/x"]),
+            ("(see https://example.com/x).", &["https://example.com/x"]),
+            ("https://ja.wikipedia.org/wiki/Foo_(bar)", &["https://ja.wikipedia.org/wiki/Foo_(bar)"]),
+            ("URL: https://example.com/path, next", &["https://example.com/path"]),
+            ("\"https://example.com/q\"", &["https://example.com/q"]),
+            ("HTTPS://EXAMPLE.COM/", &["HTTPS://EXAMPLE.COM/"]),
+            ("xhttps://example.com/", &[]),
+            ("https://", &[]),
+            ("ftp://example.com/", &[]),
+            ("javascript:alert(1)", &[]),
+            (r"C:\work\a.md", &[]),
+            ("a https://a.example/ b http://b.example/c", &["https://a.example/", "http://b.example/c"]),
+            ("https://example.com/a[b]{c}(d))]}.;,!?:'", &["https://example.com/a[b]{c}(d)"]),
+            ("https://example.com/%E6%97%A5%E6%9C%AC", &["https://example.com/%E6%97%A5%E6%9C%AC"]),
+            ("https://example.com/a\t次\nhttp://example.com/b", &["https://example.com/a", "http://example.com/b"]),
+            (
+                "https://example.com/a< https://example.com/b> https://example.com/c`",
+                &["https://example.com/a", "https://example.com/b", "https://example.com/c"],
+            ),
+            ("1HTTPS://example.com/", &[]),
+            ("https://.,;!?'", &[]),
+        ];
+        for &(input, expected) in cases {
+            let urls: Vec<_> = url_ranges(input).into_iter().map(|range| &input[range]).collect();
+            assert_eq!(urls, expected, "{input}");
+            // Markdown の構文になる境界文字は、範囲の検査だけに使う。
+            if input.contains(['`', '[']) {
+                continue;
+            }
+            let output = render(input.as_bytes(), None, None);
+            assert_eq!(output.matches("<a href=").count(), expected.len(), "{input}: {output}");
+            for url in expected {
+                let url = escape(url);
+                assert!(
+                    output.contains(&format!(
+                        "<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>"
+                    )),
+                    "{input}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn merges_consecutive_text_before_linking_and_escapes_both_href_and_label() {
+        let input = "参考 https://example.com/a_b?x=1&amp;y=2&amp;title='yes' 次";
+        let events: Vec<_> = Parser::new(input).collect();
+        assert!(events.iter().filter(|event| matches!(event, Event::Text(_))).count() > 1);
+        let output = render(input.as_bytes(), None, None);
+        let url = "https://example.com/a_b?x=1&amp;y=2&amp;title=&#39;yes";
+        assert!(
+            output.contains(&format!(
+                "<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>&#39; 次"
+            ))
+        );
+        assert_eq!(output.matches("<a href=").count(), 1);
+    }
+
+    #[test]
+    fn skips_code_link_labels_image_alt_and_escaped_raw_html() {
+        for input in [
+            "```text\nhttps://example.com/code\n```",
+            "    https://example.com/indented\n",
+            "`https://example.com/inline`",
+            "[https://example.com/label](javascript:evil)",
+            "![https://example.com/alt](image.svg)",
+            "![https://example.com/alt](javascript:evil)",
+            "<div>https://example.com/html</div>\n",
+            "<script>https://example.com/script</script>\n",
+            "文 <span title=\"https://example.com/attribute\">文字</span>",
+        ] {
+            let output = render(input.as_bytes(), None, None);
+            assert!(!output.contains("<a href="), "{input}: {output}");
+            assert!(output.contains("https://example.com/"), "{input}");
+            assert!(!output.contains("<script>"));
+        }
+        for input in ["[https://example.com/label](https://example.com/destination)", "<https://example.com/autolink>"]
+        {
+            assert_eq!(render(input.as_bytes(), None, None).matches("<a href=").count(), 1, "{input}");
+        }
+        let output = render(b"![https://example.com/alt](image.svg)", None, None);
+        assert!(output.contains("alt=\"https://example.com/alt\""));
+        assert!(!output.contains("&lt;a"));
+        // 除外した場所を抜けた後の本文では、再びリンクにする。
+        let output = render(b"<div>https://example.com/html</div>\n\n`code` [x](javascript:evil) ![alt](image.svg)\n\n```\ncode\n```\n\nhttps://example.com/after", None, None);
+        assert_eq!(output.matches("<a href=").count(), 1);
+        assert!(output.contains("href=\"https://example.com/after\""));
+    }
 
     #[test]
     fn escapes_html_and_removes_unsafe_link_and_image_schemes() {

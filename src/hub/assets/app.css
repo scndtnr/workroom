@@ -107,6 +107,7 @@ pre { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/
 .question.selected-question { border-color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
 .question.withdrawn { color: var(--muted); }
 .question-text { white-space: pre-wrap; font-size: 15px; font-weight: 600; }
+.linked-text, .question ol li { white-space: pre-wrap; }
 .answer { border-left: 2px solid var(--accent); padding-left: 8px; margin: 8px 0; }
 .answer.reflected { border-color: var(--line); }
 .draft-badge { margin-left: 6px; font-weight: 400; }

@@ -223,7 +223,7 @@ fn fixture(env: &Env) -> PathBuf {
     fs::write(room.join("outputs/report.html"), "<!doctype html><h1>報告</h1>").unwrap();
     fs::write(
         room.join("docs/a.md"),
-        "# 本文\n\n![図](image.svg) [外部](https://example.com/)\n\n<script>alert(1)</script>",
+        "# 本文\n\n![図](image.svg) [外部](https://example.com/)\n\n<script>alert(1)</script>\n\n参考：https://example.com/a_b?x=1&y=2。",
     )
     .unwrap();
     fs::write(room.join("docs/image.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>").unwrap();
@@ -353,11 +353,14 @@ fn renders_markdown_raw_images_and_rejects_bad_hosts_and_paths() {
     assert!(html.contains("&lt;script&gt;"));
     assert!(html.contains("src=\"image.svg\""));
     assert!(html.contains("class=\"dark\""));
+    assert!(html.contains("<a href=\"https://example.com/a_b?x=1&amp;y=2\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/a_b?x=1&amp;y=2</a>。"));
     assert!(response.headers["content-security-policy"].contains(&format!("http://127.0.0.1:{}", hub.port)));
     assert!(!response.headers.contains_key("cross-origin-resource-policy"));
     let raw = hub.get(&format!("{prefix}docs/a.md?raw=1"));
     assert_eq!(raw.headers["content-type"], "text/plain; charset=utf-8");
     assert!(raw.body.starts_with("# 本文".as_bytes()));
+    assert_eq!(raw.headers["content-security-policy"], "sandbox");
+    assert!(!String::from_utf8_lossy(&raw.body).contains("<a href="));
     let rendered = hub.get(&format!("{prefix}docs/report.MD.TXT"));
     assert_eq!(rendered.status, 200);
     let html = String::from_utf8(rendered.body).unwrap();
@@ -377,6 +380,49 @@ fn renders_markdown_raw_images_and_rejects_bad_hosts_and_paths() {
     for target in ["/", "/api/hello", &format!("{prefix}docs/a.md")] {
         assert_eq!(hub.request("GET", target, Some("evil.example")).status, 421);
     }
+}
+
+#[test]
+fn html_htm_and_svg_raw_responses_preserve_source_and_sandbox_without_changing_png_or_pdf() {
+    let env = Env::new();
+    let room = fixture(&env);
+    fs::write(room.join("outputs/report.HTM"), "<script>https://example.com/</script>").unwrap();
+    fs::write(room.join("docs/image.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+    fs::write(room.join("docs/report.pdf"), b"%PDF-1.4").unwrap();
+    let before = snapshot(&env.base);
+    let hub = env.start(&["-a"]);
+    let prefix = format!("/f/EXAMPLE/{}/", encode("2026-11-03-調査"));
+    for (path, mime) in [
+        ("outputs/report.html", "text/html; charset=utf-8"),
+        ("outputs/report.HTM", "text/html; charset=utf-8"),
+        ("docs/image.svg", "image/svg+xml"),
+        ("docs/image.png", "image/png"),
+        ("docs/report.pdf", "application/pdf"),
+    ] {
+        let normal = hub.get(&format!("{prefix}{path}"));
+        assert_eq!(normal.status, 200);
+        assert_eq!(normal.headers["content-type"], mime);
+        let normal_csp = &normal.headers["content-security-policy"];
+        if mime.starts_with("text/html") {
+            assert!(normal_csp.contains("sandbox allow-scripts allow-forms allow-modals allow-popups "));
+        } else if mime == "image/svg+xml" || mime == "image/png" {
+            assert_eq!(normal_csp, "sandbox");
+        } else {
+            assert!(!normal_csp.contains("sandbox"));
+        }
+        let raw = hub.get(&format!("{prefix}{path}?raw=1"));
+        assert_eq!(raw.status, 200);
+        assert_eq!(raw.body, fs::read(room.join(path)).unwrap());
+        assert_eq!(raw.body, normal.body);
+        if path.ends_with(".png") || path.ends_with(".pdf") {
+            assert_eq!(raw.headers, normal.headers);
+        } else {
+            assert_eq!(raw.headers["content-type"], "text/plain; charset=utf-8");
+            assert_eq!(raw.headers["content-security-policy"], "sandbox");
+            assert!(!raw.headers.contains_key("content-disposition"));
+        }
+    }
+    assert_eq!(snapshot(&env.base), before);
 }
 
 #[test]
