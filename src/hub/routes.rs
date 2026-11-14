@@ -15,15 +15,27 @@ const APP_JS: &str = include_str!("assets/app.js");
 const APP_CSS: &str = include_str!("assets/app.css");
 const APP_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
-type Parameters = BTreeMap<String, String>;
+#[derive(Default)]
+struct Parameters {
+    values: BTreeMap<String, String>,
+    keep: Vec<String>,
+}
+
+impl Parameters {
+    fn get(&self, key: &str) -> Option<&String> {
+        self.values.get(key)
+    }
+}
 
 fn parameters(query: &str) -> Result<Parameters, u16> {
-    let mut params = BTreeMap::new();
+    let mut params = Parameters::default();
     for item in query.split('&').filter(|item| !item.is_empty()) {
         let (key, value) = item.split_once('=').unwrap_or((item, ""));
         let key = http::decode(&key.replace('+', " "))?;
         let value = http::decode(&value.replace('+', " "))?;
-        if params.insert(key, value).is_some() {
+        if key == "keep" {
+            params.keep.push(value);
+        } else if params.values.insert(key, value).is_some() {
             return Err(400);
         }
     }
@@ -83,12 +95,15 @@ fn summaries(state: &State, params: &Parameters) -> Result<(Vec<Value>, String),
         rooms.retain(|room| room["unanswered"].as_u64().unwrap_or(0) > 0);
         label.push_str(" · 未回答あり");
     }
-    if let Some(keep) = params.get("keep")
-        && !rooms.iter().any(|room| room["room"] == *keep)
-        && let Some(mut room) = listing::kept_summary(state, keep)
-    {
-        room["outside"] = json!(true);
-        rooms.push(room);
+    for keep in &params.keep {
+        if !rooms.iter().any(|room| room["room"] == *keep)
+            && let Some(mut room) = listing::kept_summary(state, keep)
+        {
+            room["outside"] = json!(true);
+            rooms.push(room);
+        }
+    }
+    if rooms.iter().any(|room| room["outside"] == true) {
         // scan と同じ順に戻してから、安定ソートで更新順・回答待ち順を適用する。
         rooms.sort_by(|a, b| {
             let project =

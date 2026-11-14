@@ -20,6 +20,10 @@
   const drafts = new Map();
   const answerErrors = new Map();
   const additionalAnswersOpen = new Set();
+  // このタブで送信に成功したカードだけを保持する。下書きと違い、保存はしない。
+  const sentQuestions = new Map();
+  let sentQuestionFilterKey = null;
+  let sentQuestionFilterVersion = 0;
   let draftWarningShown = false;
   let questionGroups = [];
   let visibleQuestions = [];
@@ -92,6 +96,7 @@
       if (value === null) params.delete(key);
       else params.set(key, String(value));
     }
+    syncSentQuestionFilters(params);
     const hash = params.toString();
     if (hash === location.hash.slice(1)) refresh();
     else {
@@ -104,11 +109,13 @@
     if (!response.ok) throw new Error(`読み取れません（HTTP ${response.status}）`);
     return response.json();
   }
-  function scope(params) {
+  function scope(params, includeSent = false) {
     const values = roomFilterState(params);
     const { query, ...filters } = values;
     const result = new URLSearchParams({ ...filters, q: query });
-    if (params.get("room")) result.set("keep", params.get("room"));
+    const keep = new Set(params.get("room") ? [params.get("room")] : []);
+    if (includeSent) for (const room of sentQuestions.keys()) keep.add(room);
+    for (const room of keep) result.append("keep", room);
     return result;
   }
   function roomFilterState(params) {
@@ -176,6 +183,19 @@
   const initialQuestionFilters = () => ({ qstate: "unanswered", qq: "", qsort: "room" });
   function questionFilterState(params) {
     return Object.fromEntries(Object.entries(initialQuestionFilters()).map(([key, value]) => [key, params.get(key) ?? value]));
+  }
+  function syncSentQuestionFilters(params) {
+    if (!config) return sentQuestionFilterVersion;
+    const filters = { ...roomFilterState(params), ...questionFilterState(params) };
+    delete filters.sort;
+    delete filters.qsort;
+    const key = JSON.stringify(filters);
+    if (key !== sentQuestionFilterKey) {
+      sentQuestions.clear();
+      sentQuestionFilterKey = key;
+      sentQuestionFilterVersion++;
+    }
+    return sentQuestionFilterVersion;
   }
   function applyQuestionFilters() {
     clearTimeout(questionFilterTimer);
@@ -480,6 +500,7 @@
     }
   }
   async function sendAnswerGroup(submission, batch) {
+    const filterVersion = syncSentQuestionFilters(state());
     const snapshots = submission.answers.map((answer) => drafts.get(draftKey(submission.room, answer.id)));
     submission.status = "failed";
     if (includesWithdrawn(submission)) {
@@ -496,7 +517,13 @@
       const data = await response.json().catch(() => null);
       if (response.status === 200) {
         if (!Array.isArray(data?.sent) || !data.questions) throw new Error();
+        syncSentQuestionFilters(state());
         for (const id of data.sent) {
+          // 送信待ちの間に条件を変えた場合も、解除した保持を復活させない。
+          if (filterVersion === sentQuestionFilterVersion) {
+            if (!sentQuestions.has(submission.room)) sentQuestions.set(submission.room, new Set());
+            sentQuestions.get(submission.room).add(id);
+          }
           const index = submission.answers.findIndex((answer) => answer.id === id);
           // 待っている間に新しい下書きができていたら、その入力は残す。
           if (index >= 0 && drafts.get(draftKey(submission.room, id)) === snapshots[index]) removeDraft(submission.room, id);
@@ -656,9 +683,10 @@
     if (state().get("room") !== room) { values.file = ""; values.tab = ""; }
     change(values);
   }
-  function outsideBadge() {
+  function outsideBadge(sent = false) {
     const badge = element("span", "条件外", "badge muted");
-    badge.title = "今の条件には合いませんが、選んでいるので表示しています";
+    badge.title = sent ? "今の条件には合いませんが、このタブで回答を送ったので表示しています"
+      : "今の条件には合いませんが、選んでいるので表示しています";
     return badge;
   }
   function questionCard(question, room, params, showRoom = false, outside = false) {
@@ -674,7 +702,7 @@
     const heading = element("h3");
     heading.append(button(`${question.id} · ${labels[question.state] || question.state}`, () => selectQuestion(room, question.id), selected));
     heading.append(element("span", "未送信", "badge pending draft-badge"));
-    if (outside) heading.append(outsideBadge());
+    if (outside) heading.append(outsideBadge(sentQuestions.get(room)?.has(question.id)));
     card.append(heading);
     if (params.get("page") === "questions") card.append(questionLink(room, question.id, "部屋のページで開く", true));
     card.append(element("p", info.question || "質問なし", "question-text"));
@@ -939,7 +967,8 @@
   function renderQuestions(groups, params, ticket, roomPage, quiet = false) {
     const selectedGroup = groups.find((group) => group.room === params.get("room"));
     const selected = selectedGroup?.questions.find((question) => question.id === params.get("q"));
-    const key = JSON.stringify([groups, questionFilterState(params), params.get("room"), params.get("q"), roomPage]);
+    const key = JSON.stringify([groups, questionFilterState(params), params.get("room"), params.get("q"), roomPage,
+      [...sentQuestions].map(([room, ids]) => [room, [...ids]])]);
     if (quiet && renderedQuestionsKey === key) return selected;
     const active = document.activeElement;
     // 静かな更新は入力欄にフォーカスがある間は保留する。途中で取り下げられても入力を切らない。
@@ -959,7 +988,10 @@
     } : null;
     const scrollTop = $("question-content").scrollTop;
     const items = groups.flatMap((group) => group.questions
-      .filter((question) => matchesQuestion(question, group.room, params) || (question.state === "withdrawn" && hasDraft(drafts.get(draftKey(group.room, question.id)))))
+      .filter((question) => matchesQuestion(question, group.room, params)
+        || sentQuestions.get(group.room)?.has(question.id)
+        || (group.room === selectedGroup?.room && question.id === selected?.id)
+        || (question.state === "withdrawn" && hasDraft(drafts.get(draftKey(group.room, question.id)))))
       .map((question) => ({ room: group.room, question, outside: group.outside || !matchesQuestion(question, group.room, params) })));
     visibleQuestions = [...items];
     const matchedCount = items.filter(({ outside }) => !outside).length;
@@ -1099,6 +1131,7 @@
     requestController?.abort();
     requestController = new AbortController();
     const params = normalizeHash();
+    syncSentQuestionFilters(params);
     finishLoading();
     refreshing = true;
     notice(loaded ? "" : "読み込み中…");
@@ -1141,7 +1174,7 @@
           showPlaceholder("該当する部屋はありません。部屋の条件を変えてください。");
         }
       } else {
-        const questions = await api("/api/questions/all?" + scope(params));
+        const questions = await api("/api/questions/all?" + scope(params, true));
         if (ticket !== generation) return;
         const question = renderQuestions(questions.rooms, params, ticket, false, quiet);
         if (selected && question) await showRoom(selected, params, ticket, quiet);
