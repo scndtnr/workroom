@@ -83,6 +83,19 @@ fn summaries(state: &State, params: &Parameters) -> Result<(Vec<Value>, String),
         rooms.retain(|room| room["unanswered"].as_u64().unwrap_or(0) > 0);
         label.push_str(" · 未回答あり");
     }
+    if let Some(keep) = params.get("keep")
+        && !rooms.iter().any(|room| room["room"] == *keep)
+        && let Some(mut room) = listing::kept_summary(state, keep)
+    {
+        room["outside"] = json!(true);
+        rooms.push(room);
+        // scan と同じ順に戻してから、安定ソートで更新順・回答待ち順を適用する。
+        rooms.sort_by(|a, b| {
+            let project =
+                |room: &Value| room["room"].as_str().unwrap_or_default().rsplit_once('/').map(|(p, _)| p.to_owned());
+            b["name"].as_str().cmp(&a["name"].as_str()).then_with(|| project(a).cmp(&project(b)))
+        });
+    }
     match params.get("sort").map(String::as_str).unwrap_or("date") {
         "date" => {}
         "updated" => rooms.sort_by_key(|room| std::cmp::Reverse(room["modified"].as_u64().unwrap_or(0))),
@@ -219,11 +232,13 @@ fn get(state: &State, target: &str) -> Result<Response, u16> {
         "/assets/app.css" => Response::bytes(200, "text/css; charset=utf-8", APP_CSS),
         "/api/hello" => json_response(json!({"app": "workroom", "root_hash": state.root_hash})),
         "/api/config" => {
-            json_response(json!({"root": state.settings.root.display().to_string(), "filter": state.initial}))
+            json_response(json!({"root": state.settings.root.display().to_string(), "filter": state.initial,
+                "shell": if cfg!(windows) { "powershell" } else { "posix" }}))
         }
         "/api/rooms" => {
             let (rooms, label) = summaries(state, &params)?;
-            json_response(json!({"rooms": rooms, "label": label}))
+            let count = rooms.iter().filter(|room| room["outside"] != true).count();
+            json_response(json!({"rooms": rooms, "count": count, "label": label}))
         }
         "/api/files" | "/api/questions" => {
             let label = params.get("room").ok_or(400u16)?;
@@ -241,7 +256,11 @@ fn get(state: &State, target: &str) -> Result<Response, u16> {
                 .filter_map(|room| {
                     let label = room["room"].as_str()?;
                     let path = paths::room_path(&state.settings.root, label).ok()?;
-                    Some(listing::questions(state, label, &path))
+                    let mut group = listing::questions(state, label, &path);
+                    if room["outside"] == true {
+                        group["outside"] = json!(true);
+                    }
+                    Some(group)
                 })
                 .collect();
             json_response(json!({"rooms": groups, "label": label}))

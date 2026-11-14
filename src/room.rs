@@ -235,7 +235,7 @@ fn read_dirs(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
-fn read_description(dir: &Path, slug: &str) -> String {
+pub(crate) fn read_description(dir: &Path, slug: &str) -> String {
     let Ok(file) = std::fs::File::open(dir.join(README)) else {
         return String::new();
     };
