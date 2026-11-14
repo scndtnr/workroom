@@ -335,7 +335,12 @@ fn serve_file(state: &State, encoded: &str, params: &Parameters) -> Result<Respo
             return Ok(Response::bytes(
                 200,
                 "text/html; charset=utf-8",
-                markdown::render(&bytes, params.get("theme").map(String::as_str), Some(&hub_url)),
+                markdown::render(
+                    &bytes,
+                    params.get("theme").map(String::as_str),
+                    params.get("font").map(String::as_str),
+                    Some(&hub_url),
+                ),
             )
             .header("Content-Security-Policy", markdown::csp(state.port)));
         }

@@ -307,6 +307,9 @@ fn lists_states_questions_and_files_without_any_disk_writes() {
         "files-pane",
         "room-detail",
         "refresh-status",
+        "font",
+        "notice-message",
+        "notice-close",
         "questions-collapse",
         "questions-expand",
         "questions-restore",
@@ -325,6 +328,12 @@ fn lists_states_questions_and_files_without_any_disk_writes() {
     assert!(question_states.contains("人の回答を待っている確認事項（未回答）"));
     assert!(question_states.contains("回答済みで、エージェントの反映を待っている確認事項"));
     assert!(html.contains("記入済みの回答をすべて送信（0 件）"));
+    assert!(html.contains("aria-label=\"フォントを切り替える\" aria-pressed=\"false\""));
+    assert!(html.find("</header>").unwrap() < html.find("id=\"notice\"").unwrap());
+    let css = String::from_utf8(hub.get("/assets/app.css").body).unwrap();
+    for removed in ["--accent", "--pending", "--selected"] {
+        assert!(!css.contains(removed), "配信する CSS に {removed} が残っています");
+    }
     let script = String::from_utf8(hub.get("/assets/app.js").body).unwrap();
     for forbidden in ["innerHTML", "outerHTML", "insertAdjacentHTML", "window.confirm(", "alert(", "prompt("] {
         assert!(!script.contains(forbidden), "配信する JS に {forbidden} を使わないでください");
@@ -380,6 +389,39 @@ fn renders_markdown_raw_images_and_rejects_bad_hosts_and_paths() {
     for target in ["/", "/api/hello", &format!("{prefix}docs/a.md")] {
         assert_eq!(hub.request("GET", target, Some("evil.example")).status, 421);
     }
+}
+
+#[test]
+fn markdown_font_query_accepts_only_ud_and_keeps_raw_source_and_files_unchanged() {
+    let env = Env::new();
+    fixture(&env);
+    let before = snapshot(&env.base);
+    let hub = env.start(&["-a"]);
+    let prefix = format!("/f/EXAMPLE/{}/docs/", encode("2026-11-03-調査"));
+    for name in ["a.md", "report.MD.TXT"] {
+        for (query, expected) in [
+            ("font=ud", "<html lang=\"ja\" class=\"font-ud\">"),
+            ("theme=dark&font=ud", "<html lang=\"ja\" class=\"dark font-ud\">"),
+            ("theme=light&font=ud", "<html lang=\"ja\" class=\"light font-ud\">"),
+            ("theme=light&font=system", "<html lang=\"ja\" class=\"light\">"),
+            ("font=UD", "<html lang=\"ja\">"),
+            ("font=", "<html lang=\"ja\">"),
+            ("font=%22%3E%3Cscript%3E", "<html lang=\"ja\">"),
+        ] {
+            let response = hub.get(&format!("{prefix}{name}?{query}"));
+            assert_eq!(response.status, 200);
+            let html = String::from_utf8(response.body).unwrap();
+            assert!(html.starts_with(&format!("<!doctype html>{expected}")), "{name}?{query}");
+            assert!(!html.contains("<script>"));
+            assert!(response.headers["content-security-policy"].contains("style-src 'sha256-"));
+        }
+        let raw = hub.get(&format!("{prefix}{name}?raw=1"));
+        let raw_ud = hub.get(&format!("{prefix}{name}?raw=1&font=ud&theme=dark"));
+        assert_eq!(raw_ud.status, raw.status);
+        assert_eq!(raw_ud.headers, raw.headers);
+        assert_eq!(raw_ud.body, raw.body);
+    }
+    assert_eq!(snapshot(&env.base), before);
 }
 
 #[test]

@@ -307,7 +307,7 @@ pub fn summary(state: &State, room: &room::Room) -> Value {
     let data = room_data(state, &room.path);
     let unanswered = data.questions.iter().filter(|q| q.state == questions::State::Unanswered).count();
     let pending = data.questions.iter().filter(|q| q.state == questions::State::Pending).count();
-    // 「回答待ち」「反映待ち」は、画面（app.js の labels と statusClass）の確認事項の状態の名前とそろえる。
+    // 「回答待ち」「反映待ち」は、画面（app.js の labels）の確認事項の状態の名前とそろえる。
     let status = if room.done {
         "完了"
     } else if unanswered > 0 {
