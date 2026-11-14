@@ -1,6 +1,6 @@
 //! Markdown をサーバ側で描画し、入力由来の HTML と危険な URL を通さない。
 
-use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream, html};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd, html};
 use sha2::{Digest, Sha256};
 use std::ops::Range;
 use std::path::Path;
@@ -107,21 +107,70 @@ fn url_ranges(text: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-fn linked_text(text: &str) -> Option<String> {
-    let ranges = url_ranges(text);
-    if ranges.is_empty() {
-        return None;
+/// 除外範囲の間にある URL を autolink にし、URL 内の記号を Markdown の記法より先に解釈させる。
+fn append_autolinks(source: &str, range: Range<usize>, output: &mut String) {
+    let mut offset = range.start;
+    for url in url_ranges(&source[range.clone()]) {
+        let start = range.start + url.start;
+        let mut end = range.start + url.end;
+        let previous = source.as_bytes()[..start].last().copied();
+        if previous == Some(b'<') {
+            continue;
+        }
+        // URL の前後を囲む強調記号だけを外し、URL 自身に含まれる記号は保つ。
+        if let Some(marker @ (b'*' | b'_' | b'~')) = previous {
+            while end > start && source.as_bytes()[end - 1] == marker {
+                end -= 1;
+            }
+        }
+        let url = &source[start..end];
+        if url.eq_ignore_ascii_case("http://") || url.eq_ignore_ascii_case("https://") {
+            continue;
+        }
+        output.push_str(&source[offset..start]);
+        output.push('<');
+        output.push_str(url);
+        output.push('>');
+        offset = end;
     }
-    let mut output = String::new();
+    output.push_str(&source[offset..range.end]);
+}
+
+fn autolink_source(source: &str, options: Options) -> String {
+    let mut excluded = Vec::new();
+    for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
+        match event {
+            // Start のオフセットは、対応する End までのソース全体を含む。
+            Event::Start(Tag::CodeBlock(_) | Tag::Link { .. } | Tag::Image { .. } | Tag::HtmlBlock)
+            | Event::Code(_)
+            | Event::Html(_)
+            | Event::InlineHtml(_) => excluded.push(range),
+            Event::Start(Tag::Table(_)) => {
+                // 表のセルをまたいで URL を検出しないよう、区切りを除外範囲にする。
+                excluded.extend(source[range.clone()].match_indices('|').map(|(index, _)| {
+                    let start = range.start + index;
+                    start..start + 1
+                }));
+            }
+            _ => {}
+        }
+    }
+    excluded.sort_unstable_by_key(|range| (range.start, range.end));
+    let mut output = String::with_capacity(source.len());
     let mut offset = 0;
-    for range in ranges {
-        output.push_str(&escape(&text[offset..range.start]));
-        let url = escape(&text[range.clone()]);
-        output.push_str(&format!("<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>"));
+    for range in excluded {
+        if range.end <= offset {
+            continue;
+        }
+        if range.start > offset {
+            append_autolinks(source, offset..range.start, &mut output);
+            offset = range.start;
+        }
+        output.push_str(&source[offset..range.end]);
         offset = range.end;
     }
-    output.push_str(&escape(&text[offset..]));
-    Some(output)
+    append_autolinks(source, offset..source.len(), &mut output);
+    output
 }
 
 pub fn render(bytes: &[u8], theme: Option<&str>, hub_url: Option<&str>) -> String {
@@ -130,24 +179,11 @@ pub fn render(bytes: &[u8], theme: Option<&str>, hub_url: Option<&str>) -> Strin
     let invalid_utf8 = std::str::from_utf8(bytes).is_err();
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_FOOTNOTES;
+    let source = autolink_source(text.trim_start_matches('\u{feff}'), options);
     let mut links = Vec::new();
     let mut images = Vec::new();
-    let mut code_blocks = 0;
-    // HTML を Text に置き換える前につなぎ、HTML 由来の文字を URL 変換に渡さない。
-    let parser = TextMergeStream::new(Parser::new_ext(text.trim_start_matches('\u{feff}'), options));
-    let events = parser.filter_map(|event| match event {
+    let events = Parser::new_ext(&source, options).filter_map(|event| match event {
         Event::Html(value) | Event::InlineHtml(value) => Some(Event::Text(value)),
-        Event::Text(value) if links.is_empty() && images.is_empty() && code_blocks == 0 => {
-            Some(linked_text(&value).map_or_else(|| Event::Text(value), |html| Event::InlineHtml(html.into())))
-        }
-        Event::Start(Tag::CodeBlock(_)) => {
-            code_blocks += 1;
-            Some(event)
-        }
-        Event::End(TagEnd::CodeBlock) => {
-            code_blocks -= 1;
-            Some(event)
-        }
         Event::Start(Tag::Link { link_type, dest_url, title, .. }) => {
             let dest_url = if link_type == LinkType::Email { format!("mailto:{dest_url}").into() } else { dest_url };
             let allowed = allowed_url(&dest_url);
@@ -156,9 +192,12 @@ pub fn render(bytes: &[u8], theme: Option<&str>, hub_url: Option<&str>) -> Strin
                 let lower = dest_url.trim_start().to_ascii_lowercase();
                 let external = lower.starts_with("http:") || lower.starts_with("https:") || lower.starts_with("//");
                 let attributes = if external { " target=\"_blank\" rel=\"noopener noreferrer\"" } else { "" };
-                Event::InlineHtml(
-                    format!("<a href=\"{}\" title=\"{}\"{attributes}>", escape(&dest_url), escape(&title)).into(),
-                )
+                let title = if link_type == LinkType::Autolink && title.is_empty() {
+                    String::new()
+                } else {
+                    format!(" title=\"{}\"", escape(&title))
+                };
+                Event::InlineHtml(format!("<a href=\"{}\"{title}{attributes}>", escape(&dest_url)).into())
             })
         }
         Event::End(TagEnd::Link) => links.pop().unwrap_or(false).then(|| Event::InlineHtml("</a>".into())),
@@ -244,10 +283,6 @@ mod tests {
         for &(input, expected) in cases {
             let urls: Vec<_> = url_ranges(input).into_iter().map(|range| &input[range]).collect();
             assert_eq!(urls, expected, "{input}");
-            // Markdown の構文になる境界文字は、範囲の検査だけに使う。
-            if input.contains(['`', '[']) {
-                continue;
-            }
             let output = render(input.as_bytes(), None, None);
             assert_eq!(output.matches("<a href=").count(), expected.len(), "{input}: {output}");
             for url in expected {
@@ -263,18 +298,107 @@ mod tests {
     }
 
     #[test]
-    fn merges_consecutive_text_before_linking_and_escapes_both_href_and_label() {
-        let input = "参考 https://example.com/a_b?x=1&amp;y=2&amp;title='yes' 次";
-        let events: Vec<_> = Parser::new(input).collect();
-        assert!(events.iter().filter(|event| matches!(event, Event::Text(_))).count() > 1);
+    fn bare_urls_escape_both_href_and_label() {
+        let input = "参考 https://example.com/a_b?x=1&y=2&title='yes' 次";
         let output = render(input.as_bytes(), None, None);
         let url = "https://example.com/a_b?x=1&amp;y=2&amp;title=&#39;yes";
+        let label = "https://example.com/a_b?x=1&amp;y=2&amp;title='yes";
         assert!(
-            output.contains(&format!(
-                "<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>&#39; 次"
-            ))
+            output
+                .contains(&format!("<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{label}</a>' 次"))
         );
         assert_eq!(output.matches("<a href=").count(), 1);
+    }
+
+    #[test]
+    fn bare_urls_keep_markdown_symbols_and_balanced_parentheses_as_one_link() {
+        for url in [
+            "https://example.com/_a_",
+            "https://example.com/foo_bar_baz",
+            "https://example.com/a*b*c",
+            "https://example.com/~user/a~b~c",
+            "https://example.com/a__b__c",
+            "https://ja.wikipedia.org/wiki/Foo_(bar)",
+            "https://example.com/trailing**",
+        ] {
+            let output = render(url.as_bytes(), None, None);
+            assert!(
+                output.contains(&format!("<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>")),
+                "{url}: {output}"
+            );
+            assert_eq!(output.matches("<a href=").count(), 1, "{url}");
+            for tag in ["<em>", "<strong>", "<del>"] {
+                assert!(!output.contains(tag), "{url}: {tag}");
+            }
+        }
+    }
+
+    #[test]
+    fn surrounding_emphasis_and_strikethrough_stay_outside_the_link() {
+        for (input, url, tag) in [
+            ("**https://example.com/x** の強調の中", "https://example.com/x", "strong"),
+            ("_https://example.com/y_", "https://example.com/y", "em"),
+            ("~~https://example.com/z~~", "https://example.com/z", "del"),
+            ("*https://example.com/a*", "https://example.com/a", "em"),
+            ("__https://example.com/b__", "https://example.com/b", "strong"),
+        ] {
+            let output = render(input.as_bytes(), None, None);
+            assert!(
+                output.contains(&format!(
+                    "<{tag}><a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a></{tag}>"
+                )),
+                "{input}: {output}"
+            );
+            assert_eq!(output.matches("<a href=").count(), 1, "{input}");
+        }
+        for input in ["**https://**", "_http://_"] {
+            assert!(!render(input.as_bytes(), None, None).contains("<a href="), "{input}");
+        }
+    }
+
+    #[test]
+    fn table_urls_stop_at_cell_separators_and_do_not_hide_urls_in_later_cells() {
+        let input = "|a|b|\n|-|-|\n|a|https://example.com/t|\n|https://example.com/u|https://example.com/v|\n\nhttps://example.com/a|b";
+        let output = render(input.as_bytes(), None, None);
+        assert!(output.contains("<table>"));
+        assert_eq!(output.matches("<td>").count(), 4);
+        assert_eq!(output.matches("<a href=").count(), 4);
+        for url in ["https://example.com/t", "https://example.com/u", "https://example.com/v"] {
+            assert!(
+                output.contains(&format!(
+                    "<td><a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a></td>"
+                )),
+                "{url}: {output}"
+            );
+        }
+        assert!(output.contains("href=\"https://example.com/a|b\""));
+    }
+
+    #[test]
+    fn source_autolinks_preserve_literal_backslash_escapes_and_character_references() {
+        let input = r"https://example.com/a\_b?x=1&amp;y=2";
+        let output = render(input.as_bytes(), None, None);
+        let escaped = escape(input);
+        assert!(
+            output.contains(&format!(
+                "<a href=\"{escaped}\" target=\"_blank\" rel=\"noopener noreferrer\">{escaped}</a>"
+            )),
+            "{output}"
+        );
+        assert_eq!(output.matches("<a href=").count(), 1);
+    }
+
+    #[test]
+    fn source_offsets_preserve_excluded_spans_and_use_the_bom_stripped_input() {
+        let input = "\u{feff}日本語 https://example.com/_a_\n\n[https://example.com/link](https://example.com/destination) ![https://example.com/alt](image.svg) `https://example.com/code`\n\n<div>https://example.com/html</div>\n\nhttps://example.com/after";
+        let output = render(input.as_bytes(), None, None);
+        assert_eq!(output.matches("<a href=").count(), 3);
+        assert!(output.contains("<p>日本語 <a href=\"https://example.com/_a_\""));
+        assert!(output.contains("alt=\"https://example.com/alt\""));
+        assert!(output.contains("<code>https://example.com/code</code>"));
+        assert!(output.contains("&lt;div&gt;https://example.com/html&lt;/div&gt;"));
+        assert!(output.contains("href=\"https://example.com/after\""));
+        assert!(!render(b"<https://example.com/unclosed", None, None).contains("<a href="));
     }
 
     #[test]
