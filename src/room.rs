@@ -86,14 +86,10 @@ pub fn validate_project(project: &str) -> Result<()> {
 /// Windows の予約名か（大小文字を区別せず、拡張子付きも含む）。
 pub fn is_windows_reserved_name(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
-    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || ["COM", "LPT"].iter().any(|prefix| {
             stem.strip_prefix(prefix).is_some_and(|n| n.len() == 1 && matches!(n.as_bytes()[0], b'1'..=b'9'))
         })
-    {
-        return true;
-    }
-    false
 }
 
 /// 空白を正規化し、設定に応じて ASCII 英小文字だけを大文字にする
@@ -235,7 +231,7 @@ fn read_dirs(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
-fn read_description(dir: &Path, slug: &str) -> String {
+pub(crate) fn read_description(dir: &Path, slug: &str) -> String {
     let Ok(file) = std::fs::File::open(dir.join(README)) else {
         return String::new();
     };

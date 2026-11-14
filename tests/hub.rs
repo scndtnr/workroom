@@ -306,6 +306,7 @@ fn lists_states_questions_and_files_without_any_disk_writes() {
         "all-answer-send",
         "files-pane",
         "room-detail",
+        "refresh-status",
         "questions-collapse",
         "questions-expand",
         "questions-restore",
@@ -452,6 +453,173 @@ fn room_and_cross_room_question_apis_share_independent_filters() {
             room_labels,
             "{params}"
         );
+    }
+    assert_eq!(snapshot(&env.base), before);
+}
+
+#[test]
+fn selected_room_survives_filters_without_changing_counts_or_order() {
+    let env = Env::new();
+    let selected = fixture(&env);
+    for name in ["2026-11-07-new", "2026-11-01-old"] {
+        let path = env.root.join(name);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("README.md"), "# 条件内の部屋\n").unwrap();
+        fs::write(
+            path.join("QUESTIONS.jsonl"),
+            json!({"v":1,"type":"ask","id":"Q-20261106-01",
+            "at":"2026-11-06T12:00:00+09:00","question":"確認用の質問"})
+            .to_string(),
+        )
+        .unwrap();
+    }
+    // 同名の部屋と部分一致する長い名前があっても、keep と CLI はラベルで特定する。
+    for name in ["2026-11-03-調査", "EXAMPLE/2026-11-03-調査-追加"] {
+        let path = env.root.join(name);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("README.md"), "# 別の部屋\n").unwrap();
+    }
+    let hub = env.start(&["-a"]);
+    let keep = encode(ANSWER_ROOM);
+    let target = format!("/api/rooms?unanswered=1&keep={keep}");
+    let initial = hub.json("/api/rooms?unanswered=1");
+    assert_eq!(hub.json(&target), initial, "条件内なら応答を変えない");
+    assert_eq!(initial["count"], 3);
+    let initial_room = initial["rooms"].as_array().unwrap().iter().find(|room| room["room"] == ANSWER_ROOM).unwrap();
+    assert_eq!(initial_room["description"], "ハブの動作確認");
+    let response = hub.post_answers(&hub.token(), submission("Q-20261106-01", "answer", "確認しました"));
+    assert_eq!(response.status, 200);
+    let before = snapshot(&env.base);
+    let filtered = hub.json("/api/rooms?unanswered=1");
+    assert_eq!(filtered["count"], 2);
+    let kept = hub.json(&target);
+    assert_eq!(kept["count"], filtered["count"]);
+    assert_eq!(kept["label"], filtered["label"]);
+    let rooms = kept["rooms"].as_array().unwrap();
+    assert_eq!(
+        rooms.iter().map(|room| room["room"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["2026-11-07-new", ANSWER_ROOM, "2026-11-01-old"]
+    );
+    assert_eq!(rooms[1]["outside"], true);
+    assert_eq!(rooms[1]["description"], initial_room["description"]);
+    assert_eq!(rooms[1]["title"], initial_room["title"]);
+    assert!(rooms[0].get("outside").is_none());
+    assert!(rooms[2].get("outside").is_none());
+    let sorted = hub.json(&format!("{target}&sort=unanswered"));
+    assert_eq!(sorted["rooms"][2]["room"], ANSWER_ROOM);
+    let sorted = hub.json(&format!("{target}&sort=updated"));
+    let timestamps: Vec<_> =
+        sorted["rooms"].as_array().unwrap().iter().map(|room| room["modified"].as_u64().unwrap_or(0)).collect();
+    assert!(timestamps.windows(2).all(|pair| pair[0] >= pair[1]));
+    for filters in ["status=done", "period=1&days=0", "q=一致なし"] {
+        let data = hub.json(&format!("/api/rooms?{filters}&keep={keep}"));
+        assert_eq!(data["count"], 0, "{filters}");
+        assert_eq!(data["rooms"].as_array().unwrap().len(), 1, "{filters}");
+        assert_eq!(data["rooms"][0]["room"], ANSWER_ROOM);
+        assert_eq!(data["rooms"][0]["outside"], true);
+        assert_eq!(data["rooms"][0]["description"], initial_room["description"], "{filters}");
+        assert_eq!(data["rooms"][0]["title"], initial_room["title"], "{filters}");
+    }
+    // 確認事項ページでも、部屋の条件外になった選択中の質問を取得できる。
+    let groups = hub.json(&format!("/api/questions/all?unanswered=1&keep={keep}"));
+    assert_eq!(groups["label"], filtered["label"]);
+    let group = &groups["rooms"][1];
+    assert_eq!(group["room"], ANSWER_ROOM);
+    assert_eq!(group["outside"], true);
+    assert_eq!(group["questions"][0]["id"], "Q-20261106-01");
+    assert_eq!(group["questions"][0]["state"], "pending");
+    assert_eq!(hub.json("/api/questions/all?unanswered=1")["rooms"].as_array().unwrap().len(), 2);
+    // 作業ルートと別の部屋の中から、同じ部屋だけを読める。
+    for cwd in [&env.root, &env.root.join("2026-11-07-new")] {
+        let output =
+            env.command().current_dir(cwd).args(["q", "pending", "--room", ANSWER_ROOM, "--json"]).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let data: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(data["room"], ANSWER_ROOM);
+        assert_eq!(data["pending"].as_array().unwrap().len(), 2);
+    }
+    assert_eq!(snapshot(&env.base), before);
+    for keep in ["2026-11-03-missing", "調査", "../2026-11-03-調査", ""] {
+        assert_eq!(hub.json(&format!("/api/rooms?unanswered=1&keep={}", encode(keep))), filtered);
+    }
+    // 別の部屋を選ぶ（keep が変わる）と元の部屋は消える。
+    assert_eq!(hub.json("/api/rooms?unanswered=1&keep=2026-11-07-new"), filtered);
+    fs::remove_dir_all(selected).unwrap();
+    assert_eq!(hub.json(&target), filtered, "消えた部屋は無視する");
+    assert_eq!(hub.json("/api/config")["shell"], if cfg!(windows) { "powershell" } else { "posix" });
+}
+
+#[test]
+fn multiple_kept_rooms_preserve_counts_order_and_question_groups() {
+    let env = Env::new();
+    fixture(&env);
+    let other = "2026-11-05-second";
+    let waiting = "2026-11-07-waiting";
+    for name in [other, waiting] {
+        let path = env.root.join(name);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("README.md"), "# 複数の部屋の確認\n").unwrap();
+        fs::write(
+            path.join("QUESTIONS.jsonl"),
+            json!({"v":1,"type":"ask","id":"Q-20261106-01",
+                "at":"2026-11-06T12:00:00+09:00","question":"確認用の質問"})
+            .to_string(),
+        )
+        .unwrap();
+    }
+    let hub = env.start(&["-a"]);
+    let keep = format!("keep={}&keep={}", encode(ANSWER_ROOM), encode(other));
+    assert_eq!(hub.json(&format!("/api/rooms?{keep}")), hub.json("/api/rooms"), "条件内なら変更しない");
+    for (room, kind) in [(ANSWER_ROOM, "answer"), (other, "not_needed")] {
+        let response = hub.post_answers(
+            &hub.token(),
+            json!({"room":room,"answers":[{"id":"Q-20261106-01","kind":kind,"text":"確認しました"}]}),
+        );
+        assert_eq!(response.status, 200);
+    }
+    let before = snapshot(&env.base);
+    let filtered = hub.json("/api/rooms?unanswered=1");
+    let kept = hub.json(&format!("/api/rooms?unanswered=1&{keep}"));
+    assert_eq!(kept["count"], 1);
+    assert_eq!(kept["label"], filtered["label"]);
+    let rooms = kept["rooms"].as_array().unwrap();
+    assert_eq!(
+        rooms.iter().map(|room| room["room"].as_str().unwrap()).collect::<Vec<_>>(),
+        [waiting, other, ANSWER_ROOM]
+    );
+    assert!(rooms[0].get("outside").is_none());
+    assert!(rooms[1..].iter().all(|room| room["outside"] == true));
+    // 順序・重複・条件内の部屋・不正な指定を混ぜても結果を変えない。
+    let mixed = format!(
+        "keep={}&{keep}&keep={}&keep={}&keep=&keep={}&keep=2026-11-01-missing",
+        encode(other),
+        encode(ANSWER_ROOM),
+        encode(waiting),
+        encode("../2026-11-01-invalid")
+    );
+    assert_eq!(hub.json(&format!("/api/rooms?unanswered=1&{mixed}")), kept);
+    let groups = hub.json(&format!("/api/questions/all?unanswered=1&{mixed}"));
+    assert_eq!(groups["label"], filtered["label"]);
+    let groups = groups["rooms"].as_array().unwrap();
+    assert_eq!(groups.len(), 3);
+    for (group, room) in groups.iter().zip(rooms) {
+        assert_eq!(group["room"], room["room"]);
+        assert_eq!(group.get("outside"), room.get("outside"));
+        assert_eq!(group["questions"][0]["id"], "Q-20261106-01");
+        assert_eq!(group["questions"][0]["state"], if room["outside"] == true { "pending" } else { "unanswered" });
+    }
+    for sort in ["updated", "unanswered"] {
+        let sorted = hub.json(&format!("/api/rooms?unanswered=1&{keep}&sort={sort}"));
+        let rooms = sorted["rooms"].as_array().unwrap();
+        let field = if sort == "updated" { "modified" } else { "unanswered" };
+        assert!(
+            rooms.windows(2).all(|pair| pair[0][field].as_u64().unwrap_or(0) >= pair[1][field].as_u64().unwrap_or(0))
+        );
+        assert_eq!(sorted["count"], 1);
+    }
+    assert_eq!(hub.json("/api/rooms?unanswered=1"), filtered, "keep を外すと保持を終える");
+    for query in ["q=a&q=b", "room=a&room=b", "sort=date&sort=updated"] {
+        assert_eq!(hub.get(&format!("/api/rooms?{keep}&{query}")).status, 400, "{query}");
     }
     assert_eq!(snapshot(&env.base), before);
 }

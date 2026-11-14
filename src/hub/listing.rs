@@ -330,6 +330,24 @@ pub fn summary(state: &State, room: &room::Room) -> Value {
         "warnings": data.warnings, "readme": readme})
 }
 
+/// 条件外でも選択中の部屋を残す。指定は API の room と同じ完全なラベル。
+pub fn kept_summary(state: &State, label: &str) -> Option<Value> {
+    let path = paths::room_path(&state.settings.root, label).ok()?;
+    let (project, name) = label.rsplit_once('/').map_or((None, label), |(project, name)| (Some(project), name));
+    let (date, slug) = room::parse_room_name(name)?;
+    let description = if contained_files(&path).is_ok() { room::read_description(&path, &slug) } else { String::new() };
+    let room = room::Room {
+        done: path.join(room::DONE_MARKER).exists(),
+        path,
+        name: name.into(),
+        project: project.map(str::to_owned),
+        date,
+        slug,
+        description,
+    };
+    Some(summary(state, &room))
+}
+
 pub fn questions(state: &State, label: &str, path: &Path) -> Value {
     let data = room_data(state, path);
     let legacy: Vec<_> = ["QUESTIONS.md", "確認事項.md"].into_iter().filter(|name| path.join(name).is_file()).collect();
