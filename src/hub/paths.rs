@@ -40,19 +40,70 @@ pub fn file_path(root: &Path, encoded: &str) -> Result<PathBuf, u16> {
         return Err(404);
     }
     let label = parts[..room_len].join("/");
-    let room = room_path(root, &label)?;
+    let relative: Vec<_> = parts[room_len..].iter().map(String::as_str).collect();
+    let path = resolve_path(root, &label, &relative)?;
+    if path.is_file() { Ok(path) } else { Err(404) }
+}
+
+/// デコード済みの相対要素から、部屋内のファイルまたはディレクトリを解決する。
+pub fn resolve_path(root: &Path, label: &str, relative: &[&str]) -> Result<PathBuf, u16> {
+    if relative.is_empty() || !relative.iter().all(|part| valid_component(part)) {
+        return Err(404);
+    }
+    let room = room_path(root, label)?;
     let mut path = room.clone();
-    for part in &parts[room_len..] {
+    for part in relative {
         path.push(part);
     }
     let path = path.canonicalize().map_err(|_| 404u16)?;
-    if path.starts_with(&room) && path.is_file() { Ok(path) } else { Err(404) }
+    validate_resolved_path(&room, &path)?;
+    if path.is_file() || path.is_dir() { Ok(path) } else { Err(404) }
+}
+
+/// リンク先の実名も同じ規則で検査し、Win32 の別名などに化ける要素を拒否する。
+fn validate_resolved_path(room: &Path, path: &Path) -> Result<(), u16> {
+    let relative = path.strip_prefix(room).map_err(|_| 404u16)?;
+    if relative.components().all(|part| part.as_os_str().to_str().is_some_and(valid_component)) {
+        Ok(())
+    } else {
+        Err(404)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn resolved_names_reject_invalid_components_at_every_depth() {
+        let room = Path::new("rooms/2026-11-02-room");
+        for name in ["x.", "x ", ".hidden", "NUL", "a:b"] {
+            for relative in [format!("{name}/a.md"), format!("docs/{name}/a.md")] {
+                assert_eq!(validate_resolved_path(room, &room.join(relative)), Err(404));
+            }
+        }
+        assert_eq!(validate_resolved_path(room, &room.join("docs/a%20b.md")), Ok(()));
+        assert_eq!(validate_resolved_path(room, Path::new("rooms/2026-11-02-other/a.md")), Err(404));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolved_verbatim_directory_with_trailing_dot_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let room = dir.path().canonicalize().unwrap();
+        let unusual = room.join("x.");
+        if let Err(error) = fs::create_dir(&unusual) {
+            eprintln!("末尾がドットのディレクトリを作れないためスキップ: {error}");
+            return;
+        }
+        let resolved = unusual.canonicalize().unwrap();
+        assert_eq!(resolved.file_name().unwrap(), "x.");
+        assert_eq!(validate_resolved_path(&room, &resolved), Err(404));
+        fs::write(unusual.join("a.ps1"), "実行しない").unwrap();
+        assert_eq!(validate_resolved_path(&room, &unusual.join("a.ps1").canonicalize().unwrap()), Err(404));
+        fs::remove_dir_all(&unusual).unwrap();
+    }
 
     #[test]
     fn rejects_traversal_hidden_and_windows_aliases() {
@@ -126,5 +177,29 @@ mod tests {
         symlink(&room.join("inside.txt"), &room.join("inside-link")).unwrap();
         assert_eq!(file_path(dir.path(), "2026-11-02-room/outside-link"), Err(404));
         assert!(file_path(dir.path(), "2026-11-02-room/inside-link").is_ok());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn resolved_link_target_names_are_revalidated() {
+        let dir = tempfile::tempdir().unwrap();
+        let label = "2026-11-02-room";
+        let room = dir.path().join(label);
+        fs::create_dir_all(room.join(".hidden")).unwrap();
+        fs::write(room.join(".hidden/a.md"), "隠れた実名を拒否する").unwrap();
+        #[cfg(unix)]
+        let symlink = |from: &Path, to: &Path| std::os::unix::fs::symlink(from, to);
+        #[cfg(windows)]
+        let symlink = |from: &Path, to: &Path| std::os::windows::fs::symlink_file(from, to);
+        if let Err(error) = symlink(&room.join(".hidden/a.md"), &room.join("alias.md")) {
+            #[cfg(windows)]
+            if error.kind() == std::io::ErrorKind::PermissionDenied || error.raw_os_error() == Some(1314) {
+                eprintln!("シンボリックリンクの作成権限がないためスキップ: {error}");
+                return;
+            }
+            panic!("シンボリックリンクを作れません: {error}");
+        }
+        assert_eq!(resolve_path(dir.path(), label, &["alias.md"]), Err(404));
+        assert_eq!(file_path(dir.path(), &format!("{label}/alias.md")), Err(404));
     }
 }

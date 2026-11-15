@@ -92,6 +92,7 @@ nav, .filter-bar, .hub-actions, .tabs, .toolbar { display: flex; align-items: ce
 .room-header { flex: 0 0 auto; padding-bottom: 4px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
 .room-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .room-heading h1 { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-heading button { flex: 0 0 auto; font-size: 11px; padding: 2px 4px; white-space: nowrap; }
 .badge { flex: 0 0 auto; border: 1px solid var(--line); border-radius: 12px; padding: 0 5px; font-size: 11px; white-space: nowrap; }
 .chip { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; border: 1px solid transparent; border-radius: 999px; padding: 0 8px; font-size: 12px; font-weight: 600; line-height: 1.7; white-space: nowrap; }
 .chip.human { color: var(--human); background: var(--human-bg); }
@@ -126,7 +127,7 @@ p { margin: 4px 0; }
 .preview-header { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; padding-bottom: 4px; }
 .preview-header > button { flex: 0 0 auto; white-space: nowrap; }
 .preview-header h3 { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; font-size: 12px; }
-.toolbar { flex: 0 0 auto; margin-left: auto; font-size: 11px; white-space: nowrap; }
+.toolbar { flex: 0 0 auto; flex-wrap: wrap; max-width: 100%; margin-left: auto; font-size: 11px; white-space: nowrap; }
 .toolbar button { font-size: 11px; padding: 2px 4px; }
 a { color: var(--link); text-decoration: underline; }
 .preview-body { flex: 1 1 0; min-height: 0; overflow: auto; }
@@ -217,7 +218,7 @@ summary { cursor: pointer; color: var(--muted); }
   #question-content { flex: 1 0 min(60dvh, 360px); }
 }
 @media print {
-  .app-header, #notice, #rooms, .tabs, .toolbar, .filter-bar, .pane-heading button, .pane-restore, .file-browser,
+  .app-header, #notice, #rooms, .tabs, .toolbar, .filter-bar, .pane-heading button, .pane-restore, .file-browser, .open-button,
   .answer-form, .answer-choices button, .additional-answer, .withdrawn-draft, .draft-badge, [data-draft-count], [data-room-send], #all-answer-actions, #draft-warning, #answer-confirmation, #answer-guides { display: none !important; }
   html, body { height: auto; overflow: visible; }
   body, #content { color: black; background: white; }

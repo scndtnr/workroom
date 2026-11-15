@@ -21,6 +21,11 @@ impl Request {
     }
 }
 
+/// 本文を読み、エラーも JSON で返す POST。クエリを除いて完全一致させる。
+pub fn is_json_post(request: &Request) -> bool {
+    request.method == "POST" && matches!(request.target.split('?').next(), Some("/api/answers" | "/api/open"))
+}
+
 pub enum Body {
     Bytes(Vec<u8>),
     File(File, u64),
@@ -60,7 +65,7 @@ impl Response {
 pub fn error_message(status: u16) -> &'static str {
     match status {
         400 => "要求の形式が不正です",
-        403 => "回答の送信に必要なヘッダが一致しません",
+        403 => "操作に必要なヘッダが一致しません",
         404 => "見つかりません",
         405 => "GET だけを受け付けます",
         408 => "要求の読み取りがタイムアウトしました",
@@ -151,7 +156,7 @@ pub fn read_body(reader: impl Read, request: &mut Request) -> Result<(), u16> {
     } else {
         None
     };
-    if request.method == "POST" && request.target.split('?').next() == Some("/api/answers") {
+    if is_json_post(request) {
         let length = length.ok_or(411u16)?;
         reader.take(length).read_to_end(&mut request.body).map_err(|error| {
             if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) { 408u16 } else { 400u16 }
@@ -291,6 +296,31 @@ mod tests {
             read_request(b"POST /api/answers HTTP/1.1\r\nContent-Length: 1048576\r\n\r\n".as_slice()).unwrap_err(),
             413
         );
+    }
+
+    #[test]
+    fn open_reads_json_body_with_answer_framing_rules_and_exact_route_matching() {
+        for target in ["/api/open", "/api/open?x=1"] {
+            let body = r#"{"room":"2026-11-02-room"}"#;
+            let raw = format!("POST {target} HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}余り", body.len());
+            assert_eq!(read_request(raw.as_bytes()).unwrap().body, body.as_bytes());
+            for (header, status) in [("", 411), ("Content-Length: 3\r\n", 400), ("Content-Length: 1048576\r\n", 413)] {
+                let raw = format!("POST {target} HTTP/1.1\r\n{header}\r\n");
+                assert_eq!(read_request(raw.as_bytes()).unwrap_err(), status);
+            }
+        }
+        struct NeverRead;
+        impl Read for NeverRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("未知の POST の本文は読まない")
+            }
+        }
+        for target in ["/api/openx", "/api/open/x", "/api/openx?x=1"] {
+            let raw = format!("POST {target} HTTP/1.1\r\nContent-Length: 3\r\n\r\n");
+            let req = read_request(raw.as_bytes().chain(NeverRead)).unwrap();
+            assert!(!is_json_post(&req));
+            assert!(req.body.is_empty());
+        }
     }
 
     #[test]

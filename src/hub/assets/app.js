@@ -150,6 +150,31 @@
     node.addEventListener("click", action);
     return node;
   }
+  function openButton(text, submission) {
+    const node = button(text, async () => {
+      if (node.disabled) return;
+      node.disabled = true;
+      try {
+        const response = await fetch("/api/open", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Workroom-Token": document.querySelector('meta[name="workroom-token"]').content },
+          body: JSON.stringify(submission)
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || typeof data?.message !== "string") {
+          throw new Error(typeof data?.error === "string" ? data.error : `開くよう OS に依頼できません（HTTP ${response.status}）`);
+        }
+        notice(data.message, false, "open");
+      } catch (error) {
+        showError(error, "open");
+      } finally {
+        node.disabled = false;
+      }
+    });
+    node.classList.add("open-button");
+    node.removeAttribute("aria-pressed");
+    return node;
+  }
   function change(values) {
     const params = state();
     for (const [key, value] of Object.entries(values)) {
@@ -933,6 +958,9 @@
     const url = fileUrl(room, path);
     const toolbar = element("div", undefined, "toolbar");
     toolbar.append(separateTab(hubUrl(room, path)), separateTab(url, "ファイルだけを開く"));
+    const openExtension = path.split("/").at(-1).match(/\.([^.]+)$/)?.[1].toLowerCase();
+    if (config.open_extensions.includes(openExtension)) toolbar.append(openButton("既定のアプリで開く", { room, path }));
+    toolbar.append(openButton("フォルダを開く", { room, path, folder: true }));
     const markdown = isMarkdown(path);
     const extension = path.split(".").at(-1).toLowerCase();
     const textAvailable = markdown || ["html", "htm", "svg"].includes(extension);
@@ -1019,6 +1047,7 @@
       status.title = status.textContent;
       heading.append(status);
     }
+    heading.append(openButton("部屋のフォルダを開く", { room: label }));
     header.append(heading);
     const tabs = element("div", undefined, "tabs");
     for (const [key, text] of [["overview", "概要"], ["files", "成果物"]]) {
