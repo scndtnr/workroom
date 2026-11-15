@@ -32,6 +32,7 @@
   let deferredQuestionRender = null;
   let confirmation = null;
   let submitting = false;
+  const notices = new Map();
   const compactViewport = matchMedia("(max-width: 850px)");
   let sidebarPreference = null;
   try {
@@ -48,7 +49,18 @@
   } catch { /* 読めないときは両方開く */ }
   let theme;
   try { theme = localStorage.getItem("workroom-hub-theme"); } catch { /* 保存できなくても表示する */ }
-  if (theme === "dark" || theme === "light") document.documentElement.className = theme;
+  if (theme !== "dark" && theme !== "light") theme = null;
+  function applyTheme() {
+    for (const name of ["dark", "light"]) document.documentElement.classList.toggle(name, theme === name);
+  }
+  applyTheme();
+  let font = "";
+  try { if (localStorage.getItem("workroom-hub-font") === "ud") font = "ud"; } catch { /* 保存は任意 */ }
+  function applyFont() {
+    document.documentElement.classList.toggle("font-ud", font === "ud");
+    $("font").setAttribute("aria-pressed", String(font === "ud"));
+  }
+  applyFont();
   const currentTheme = () => theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   const state = () => new URLSearchParams(location.hash.slice(1));
   function normalizeHash() {
@@ -210,7 +222,6 @@
   function scheduleFilters(delay) {
     clearTimeout(filterTimer);
     invalidateRequest();
-    notice();
     if (delay === 0) applyFilters();
     else filterTimer = setTimeout(applyFilters, delay);
   }
@@ -255,7 +266,6 @@
   function scheduleQuestionFilters(delay) {
     clearTimeout(questionFilterTimer);
     invalidateRequest();
-    notice();
     if (delay === 0) applyQuestionFilters();
     else questionFilterTimer = setTimeout(applyQuestionFilters, delay);
   }
@@ -303,7 +313,10 @@
   }
   function fileUrl(room, path, markdownTheme = true) {
     const url = new URL("/f/" + room.split("/").concat(path.split("/")).map(encodeURIComponent).join("/"), location.origin);
-    if (markdownTheme && isMarkdown(path)) url.searchParams.set("theme", currentTheme());
+    if (markdownTheme && isMarkdown(path)) {
+      url.searchParams.set("theme", currentTheme());
+      if (font === "ud") url.searchParams.set("font", "ud");
+    }
     return url;
   }
   function fileSelection(room, path) {
@@ -339,9 +352,22 @@
   }
   // 表示名を変えるときは、サーバの部屋の状態（src/hub/listing.rs の summary）もそろえる。
   const labels = { unanswered: "回答待ち", pending: "反映待ち", resolved: "解決済み", withdrawn: "取り下げ" };
-  // 部屋の状態の「回答待ち」「反映待ち」は、確認事項の状態の印と同じ色にする。
-  const statusClass = (status) => status === labels.unanswered ? "unanswered" : status === labels.pending ? "pending"
-    : status.startsWith("待ち") || status.endsWith("待ち") ? "pending" : status.startsWith("進行中") || status.startsWith("完了可") ? "unanswered" : "";
+  const stateColors = { unanswered: "human", pending: "agent", resolved: "done", withdrawn: "gone" };
+  const chip = (text, kind) => element("span", text, "badge chip " + kind);
+  function appendRoomState(parent, room) {
+    // 回答待ち・反映待ちは件数で示す。STATUS の自由な文には状態色を付けない。
+    if (room.state === "完了") parent.append(chip(room.state, "done"));
+    else if (![labels.unanswered, labels.pending].includes(room.state)) parent.append(element("span", room.state, "muted"));
+    if (room.unanswered) parent.append(chip(`${labels.unanswered} ${room.unanswered}`, "human"));
+    if (room.pending) parent.append(chip(`${labels.pending} ${room.pending}`, "agent"));
+    parent.append(draftCountBadge(room.room));
+  }
+  function recordedTime(value) {
+    const node = element("time", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+      ? value.slice(0, 16).replace("T", " ") : value);
+    node.title = value;
+    return node;
+  }
   for (const status of ["unanswered", "pending"]) {
     $("qstate-filter").querySelector(`button[value="${status}"]`).textContent = labels[status];
   }
@@ -407,8 +433,10 @@
     return [...drafts.keys()].filter((key) => key.startsWith(prefix)).length;
   }
   function draftCountBadge(room) {
-    const badge = element("span", undefined, "badge pending");
+    const count = draftCount(room);
+    const badge = chip(`未送信 ${count}`, "draft");
     badge.dataset.draftCount = room;
+    badge.hidden = !count;
     return badge;
   }
   function roomAnswers(room) {
@@ -434,13 +462,14 @@
     document.querySelectorAll(".question").forEach((card) => {
       const key = draftKey(card.dataset.room, card.dataset.questionId);
       card.querySelector(".draft-badge").hidden = !hasDraft(drafts.get(key));
+      card.querySelector(".answer-form")?.classList.toggle("has-draft", hasDraft(drafts.get(key)));
       const error = card.querySelector(".answer-error");
       error.textContent = answerErrors.get(key) || "";
       error.hidden = !error.textContent;
     });
     document.querySelectorAll(".answer-form button, .answer-form textarea, .withdrawn-draft button").forEach((node) => { node.disabled = submitting; });
     document.querySelectorAll(".answer-choices button").forEach((node) => {
-      node.disabled = submitting || node.closest(".answer-form").classList.contains("not-needed");
+      node.disabled = submitting || node.closest(".question").querySelector(".answer-form").classList.contains("not-needed");
     });
     document.querySelectorAll("[data-answer-send]").forEach((node) => {
       node.disabled = submitting || !sendable(drafts.get(draftKey(node.dataset.room, node.dataset.answerSend)));
@@ -456,6 +485,7 @@
   }
   function roomSendButton(room) {
     const node = button("", () => confirmAnswers([{ room, answers: roomAnswers(room) }]));
+    node.classList.add("primary");
     node.dataset.roomSend = room;
     return node;
   }
@@ -469,7 +499,8 @@
           return question ? ask(question).question || "質問なし" : "質問なし";
         })
       })),
-      complete: false, tokenInvalid: false
+      complete: false, tokenInvalid: false,
+      room: state().get("room")
     };
     renderConfirmation();
     $("answer-confirmation").scrollIntoView({ block: "nearest" });
@@ -477,12 +508,28 @@
   function includesWithdrawn(group) {
     return group.answers.some((answer) => questionGroups.find((current) => current.room === group.room)?.questions.some((question) => question.id === answer.id && question.state === "withdrawn"));
   }
+  function closeRoomConfirmation(params) {
+    if (!submitting && confirmation && (params.get("page") || "rooms") === "rooms" && confirmation.room !== params.get("room")) {
+      confirmation = null;
+      renderConfirmation();
+    }
+  }
   function renderConfirmation() {
     const panel = $("answer-confirmation");
     panel.replaceChildren();
     panel.hidden = !confirmation;
     if (!confirmation) return;
     panel.append(element("h2", "回答の送信確認"));
+    if (confirmation.complete) {
+      const sent = confirmation.groups.filter((group) => group.status === "sent").length;
+      const total = confirmation.groups.length;
+      const failed = sent !== total;
+      const result = element("p", failed
+        ? `送信できなかった部屋があります（${total} 部屋中 ${sent} 部屋を送信）。下書きは残しています。`
+        : `送信しました（${total} 部屋中 ${sent} 部屋）`, "answer-result " + (failed ? "ng" : "ok"));
+      result.setAttribute("role", failed ? "alert" : "status");
+      panel.append(result);
+    }
     const list = element("div", undefined, "answer-confirmation-list");
     for (const group of confirmation.groups) {
       const section = element("section");
@@ -494,12 +541,14 @@
           element("p", answer.kind === "not_needed" && !answer.text ? "理由なし" : answer.text, "confirmation-text"));
         section.append(entry);
       });
-      if (group.status === "sent") section.append(element("p", "送信しました"));
+      if (group.status === "sent") section.append(element("p", "送信しました", "answer-sent"));
       if (group.status === "skipped") section.append(element("p", "送信を中止しました。下書きは残しています。", "warning"));
       if (group.error) section.append(element("p", group.error, "warning"));
       list.append(section);
     }
-    const send = button(submitting ? "送信中…" : "送信する", sendAnswers);
+    const count = confirmation.groups.reduce((total, group) => total + group.answers.length, 0);
+    const send = button(submitting ? "送信中…" : `送信する（${count} 件）`, sendAnswers);
+    send.classList.add("primary");
     const cancel = button(confirmation.complete ? "閉じる" : "やめる", () => { confirmation = null; renderConfirmation(); });
     send.disabled = cancel.disabled = submitting;
     const withdrawn = !confirmation.complete && confirmation.groups.some(includesWithdrawn);
@@ -508,10 +557,6 @@
     if (!confirmation.complete) actions.append(send);
     actions.append(cancel);
     panel.append(list);
-    if (confirmation.complete) {
-      const sent = confirmation.groups.filter((group) => group.status === "sent").length;
-      panel.append(element("p", `${confirmation.groups.length} 部屋中 ${sent} 部屋を送信しました。`));
-    }
     if (confirmation.tokenInvalid) panel.append(element("p", "トークンが無効なため、残りの送信を中止しました。ページを再読み込みしてください。", "warning"));
     if (withdrawn) panel.append(element("p", "取り下げた項目が含まれています。「やめる」で戻り、送信する回答を選び直してください。", "warning"));
     panel.append(actions);
@@ -543,6 +588,7 @@
     } finally {
       batch.complete = true;
       submitting = false;
+      closeRoomConfirmation(state());
       renderConfirmation();
       updateDraftUI();
     }
@@ -638,12 +684,25 @@
         status.textContent = "Ctrl+C でコピーしてください";
       }
     });
-    const actions = element("div", undefined, "answer-actions");
-    actions.append(copy, button("閉じる", () => guide.remove()));
-    guide.append(element("h2", "エージェントへの貼り付け用"), message, actions, status);
-    $("answer-guides").append(guide);
+    copy.classList.add("primary");
+    const heading = element("header");
+    heading.append(element("h2", "エージェントに貼る文"), copy, button("閉じる", () => guide.remove()));
+    guide.append(heading, message, status);
+    $("answer-guides").replaceChildren(guide);
   }
-  function answerForm(question, room) {
+  function questionChoices(question) {
+    const choices = element("ol", undefined, "answer-choices");
+    const info = ask(question);
+    (info.choices || []).forEach((choice, index) => {
+      const line = element("li");
+      const text = linkedElement("span", choice, "choice-text");
+      if (info.recommend === index + 1) text.append(document.createTextNode(" "), chip("推奨", "recommend"));
+      line.append(text);
+      choices.append(line);
+    });
+    return choices;
+  }
+  function answerForm(question, room, choices) {
     const draft = drafts.get(draftKey(room, question.id));
     const form = element("div", undefined, "answer-form");
     const textarea = element("textarea");
@@ -681,30 +740,30 @@
       saveDraft(room, question.id, kind, textarea.value);
       flushQuestionRender();
     });
-    const choices = element("ul", undefined, "answer-choices");
     const info = ask(question);
     (info.choices || []).forEach((choice, index) => {
-      const line = element("li");
       const insert = button("入れる", () => {
         if (submitting || kind === "not_needed") return;
+        const details = form.closest("details");
+        if (details) details.open = true;
         const start = textarea.selectionStart;
         textarea.setRangeText(choice, start, textarea.selectionEnd, "end");
         saveDraft(room, question.id, kind, textarea.value);
         textarea.focus({ preventScroll: true });
       });
       insert.setAttribute("aria-label", `選択肢 ${index + 1} を入れる`);
-      line.append(linkedElement("span", choice + (info.recommend === index + 1 ? "（推奨）" : "")), insert);
-      choices.append(line);
+      choices.children[index].append(insert);
     });
     const send = button("この回答だけ送信", () => {
       const current = drafts.get(draftKey(room, question.id));
       if (sendable(current)) confirmAnswers([{ room, answers: [{ id: question.id, kind: current.kind, text: current.text }] }]);
     });
+    send.classList.add("primary");
     send.dataset.answerSend = question.id;
     send.dataset.room = room;
     const actions = element("div", undefined, "answer-actions");
     actions.append(send);
-    form.append(kindButtons, choices, label, explanation, actions);
+    form.append(kindButtons, label, explanation, actions);
     updateKind();
     return form;
   }
@@ -732,13 +791,14 @@
     change(values);
   }
   function outsideBadge(sent = false) {
-    const badge = element("span", "条件外", "badge muted");
+    const badge = chip("条件外", "outside");
     badge.title = sent ? "今の条件には合いませんが、このタブで回答を送ったので表示しています"
       : "今の条件には合いませんが、選んでいるので表示しています";
     return badge;
   }
   function questionCard(question, room, params, showRoom = false, outside = false) {
-    const card = element("section", undefined, "question");
+    const color = stateColors[question.state] || "gone";
+    const card = element("section", undefined, "question " + color);
     card.dataset.questionId = question.id;
     card.dataset.room = room;
     const selected = params.get("room") === room && params.get("q") === question.id;
@@ -746,67 +806,89 @@
     card.classList.toggle("withdrawn", question.state === "withdrawn");
     if (selected) card.setAttribute("aria-current", "true");
     const info = ask(question);
-    if (showRoom) card.append(button(room, () => selectQuestion(room, question.id), selected));
-    const heading = element("h3");
-    heading.append(button(`${question.id} · ${labels[question.state] || question.state}`, () => selectQuestion(room, question.id), selected));
-    heading.append(element("span", "未送信", "badge pending draft-badge"));
+    const heading = element("div", undefined, "question-head");
+    if (showRoom) heading.append(button(room, () => selectQuestion(room, question.id), selected));
+    const id = button(question.id, () => selectQuestion(room, question.id), selected);
+    id.classList.add("question-id");
+    id.setAttribute("aria-label", `${question.id} を選ぶ`);
+    heading.append(chip(labels[question.state] || question.state, color), id);
+    heading.append(element("span", "未送信", "badge chip draft draft-badge"));
     if (outside) heading.append(outsideBadge(sentQuestions.get(room)?.has(question.id)));
-    card.append(heading);
-    if (params.get("page") === "questions") card.append(questionLink(room, question.id, "部屋のページで開く", true));
-    card.append(linkedElement("p", info.question || "質問なし", "question-text"));
-    if (!question.ask) card.append(element("p", "質問なし（写しから表示）", "warning"));
     const at = question.ask?.at || info.asked_at;
-    if (info.by || at) card.append(element("p", `起票: ${info.by || ""} ${at || ""}`, "muted"));
+    if (info.by || at) {
+      const meta = element("span", undefined, "question-meta");
+      if (info.by) meta.append(document.createTextNode(info.by));
+      if (info.by && at) meta.append(document.createTextNode(" · "));
+      if (at) meta.append(recordedTime(at));
+      heading.append(meta);
+    }
+    card.append(heading);
+    const body = element("div", undefined, "question-body");
+    card.append(body);
+    if (params.get("page") === "questions") body.append(questionLink(room, question.id, "部屋のページで開く", true));
+    const text = info.question || "質問なし";
+    const firstBreak = text.indexOf("\n");
+    const questionText = linkedElement("p", firstBreak < 0 ? text : text.slice(0, firstBreak), "question-text");
+    if (firstBreak >= 0) questionText.append(linkedElement("span", text.slice(firstBreak), "rest"));
+    body.append(questionText);
+    if (!question.ask) body.append(element("p", "質問なし（写しから表示）", "warning"));
     if (info.origin) {
       const origin = element("p", undefined, "muted");
       origin.append(questionLink(room, info.origin), element("span", " の続き"));
-      card.append(origin);
+      body.append(origin);
     }
-    if (info.background) card.append(linkedElement("pre", info.background));
-    if (question.state === "withdrawn" && info.choices?.length) {
-      const choices = element("ol");
-      info.choices.forEach((choice, index) => choices.append(linkedElement("li", choice + (info.recommend === index + 1 ? "（推奨）" : ""))));
-      card.append(choices);
+    if (info.background) {
+      const background = element("div", undefined, "question-background");
+      background.append(element("strong", "背景"), linkedElement("div", info.background, "linked-text"));
+      body.append(background);
     }
+    const choices = questionChoices(question);
+    if (choices.childElementCount) body.append(choices);
     for (const answer of question.answers) {
       const reflected = answer.n <= question.reflected_upto;
       const block = element("div", undefined, "answer" + (reflected ? " reflected" : ""));
-      block.append(element("p", `回答 ${answer.n} · ${answer.at} · ${answer.kind === "not_needed" ? "回答不要" : "回答"} · ${reflected ? "反映済み" : "未反映"}`, "muted"));
-      block.append(linkedElement("pre", answer.text || "（理由なし）"));
-      card.append(block);
+      const meta = element("p", `回答 ${answer.n} · `, "answer-meta");
+      meta.append(recordedTime(answer.at), document.createTextNode(` · ${answer.kind === "not_needed" ? "回答不要" : "回答"} · ${reflected ? "反映済み" : "未反映"}`));
+      block.append(meta, linkedElement("p", answer.text || "（理由なし）", "linked-text"));
+      body.append(block);
     }
     for (const event of question.done) {
-      card.append(linkedElement("p", `反映先: ${event.to}（${event.at}、回答 ${event.upto} まで）`, "linked-text"));
-      if (event.chat) card.append(linkedElement("pre", "会話での回答: " + event.chat));
+      const target = linkedElement("p", `反映先: ${event.to}（`, "linked-text");
+      target.append(recordedTime(event.at), document.createTextNode(`、回答 ${event.upto} まで）`));
+      body.append(target);
+      if (event.chat) body.append(linkedElement("p", "会話での回答: " + event.chat, "linked-text"));
     }
     const withdrawal = question.withdrawals.at(-1);
     if (withdrawal) {
-      card.append(linkedElement("pre", "取り下げの理由: " + withdrawal.reason));
+      body.append(linkedElement("p", "取り下げの理由: " + withdrawal.reason, "linked-text"));
       if (withdrawal.successor) {
         const successor = element("p", "後継: ");
         successor.append(questionLink(room, withdrawal.successor));
-        card.append(successor);
+        body.append(successor);
       }
-      if (question.answers.length) card.append(element("p", "取り下げた項目への回答を記録として表示しています。", "muted"));
+      if (question.answers.length) body.append(element("p", "取り下げた項目への回答を記録として表示しています。", "muted"));
     }
     if (question.state === "withdrawn") {
       const draft = withdrawnDraft(question, room);
-      if (draft) card.append(draft);
+      if (draft) body.append(draft);
     } else if (question.state === "resolved" || question.state === "pending") {
       const details = element("details", undefined, "additional-answer");
       const key = draftKey(room, question.id);
       details.open = additionalAnswersOpen.has(key) || hasDraft(drafts.get(key));
-      details.append(element("summary", "再回答する"), answerForm(question, room));
+      details.append(element("summary", "再回答する"), answerForm(question, room, choices));
+      const updateChoiceButtons = () => choices.querySelectorAll("button").forEach((node) => { node.hidden = !details.open; });
+      updateChoiceButtons();
       details.addEventListener("toggle", () => {
         if (!details.isConnected) return;
+        updateChoiceButtons();
         if (details.open) additionalAnswersOpen.add(key);
         else additionalAnswersOpen.delete(key);
       });
-      card.append(details);
-    } else card.append(answerForm(question, room));
+      body.append(details);
+    } else body.append(answerForm(question, room, choices));
     const error = element("p", "", "warning answer-error");
     error.setAttribute("role", "status");
-    card.append(error);
+    body.append(error);
     return card;
   }
   async function textPreview(response, parent, ticket) {
@@ -830,7 +912,17 @@
     parent.append(linkedElement("pre", text));
     if (size >= limit) parent.append(element("p", "先頭 1 MiB までを表示しています。", "muted"));
   }
-  async function preview(parent, room, path, ticket, fileToggle) {
+  async function preview(parent, room, path, ticket, fileToggle, quiet = false) {
+    try {
+      await renderPreview(parent, room, path, ticket, fileToggle);
+      if (ticket === generation && !quiet) clearNotice("preview");
+    } catch (error) {
+      // ファイル取得の失敗を、部屋・確認事項の再取得の失敗と区別する。
+      error.noticeSource = "preview";
+      throw error;
+    }
+  }
+  async function renderPreview(parent, room, path, ticket, fileToggle) {
     if (ticket !== generation) return;
     const panel = element("section", undefined, "preview");
     const heading = element("div", undefined, "preview-header");
@@ -920,9 +1012,8 @@
     const heading = element("div", undefined, "room-heading");
     const name = element("h1", label);
     name.title = label;
-    heading.append(name, element("span", room.state, "badge " + statusClass(room.state)));
-    if (room.unanswered) heading.append(element("span", `${labels.unanswered} ${room.unanswered}`, "badge unanswered"));
-    if (room.pending) heading.append(element("span", `${labels.pending} ${room.pending}`, "badge pending"));
+    heading.append(name);
+    appendRoomState(heading, room);
     if (room.status && room.status !== room.state) {
       const status = element("span", "status: " + room.status, "room-status");
       status.title = status.textContent;
@@ -954,8 +1045,8 @@
       if (!files) {
         const pane = element("div", undefined, "view-pane");
         next.append(pane);
-        await preview(pane, label, "README.md", ticket);
-      } else await showFiles(next, files, label, params, ticket, tab === "overview" ? "README.md がないため、成果物を表示します。" : "");
+        await preview(pane, label, "README.md", ticket, undefined, quiet);
+      } else await showFiles(next, files, label, params, ticket, tab === "overview" ? "README.md がないため、成果物を表示します。" : "", quiet);
       if (ticket !== generation) return;
       content.replaceChildren(next);
       updateMarkdownTheme(content);
@@ -976,7 +1067,7 @@
     browser.append(other);
     return browser;
   }
-  async function showFiles(parent, files, room, params, ticket, message) {
+  async function showFiles(parent, files, room, params, ticket, message, quiet = false) {
     if (ticket !== generation) return;
     const workspace = element("div", undefined, "file-workspace");
     const browser = fileBrowser(files, room, params, message);
@@ -998,7 +1089,7 @@
     });
     toggle.setAttribute("aria-controls", "file-browser");
     update();
-    if (params.get("file")) await preview(pane, room, params.get("file"), ticket, toggle);
+    if (params.get("file")) await preview(pane, room, params.get("file"), ticket, toggle, quiet);
     else {
       const toolbar = element("div", undefined, "toolbar");
       toolbar.append(toggle);
@@ -1086,7 +1177,7 @@
         details.addEventListener("toggle", () => {
           if (details.open && details.childElementCount === 1) {
             const current = generation;
-            preview(details, group.room, legacy, current).catch((error) => { if (current === generation) showError(error); });
+            preview(details, group.room, legacy, current).catch((error) => { if (current === generation) showError(error, "preview"); });
           }
         });
       }
@@ -1116,13 +1207,27 @@
     }
     return selected;
   }
-  function notice(text = "", error = false) {
+  function notice(text, error = false, source = "refresh") {
+    notices.set(source, { text, error });
+    renderNotice();
+  }
+  function renderNotice() {
+    const entries = [...notices.values()];
+    const errors = entries.filter((entry) => entry.error);
+    const error = errors.length > 0;
     const node = $("notice");
-    node.textContent = text;
-    node.hidden = !text;
+    node.setAttribute("role", error ? "alert" : "status");
+    $("notice-heading").hidden = !error;
+    $("notice-message").textContent = (error ? errors : entries).map((entry) => entry.text).join("\n");
+    node.hidden = !entries.length;
     node.classList.toggle("error", error);
   }
-  function showError(error) { notice(error.message || String(error), true); }
+  function clearNotice(source) {
+    if (source) notices.delete(source);
+    else notices.clear();
+    renderNotice();
+  }
+  function showError(error, source = "refresh") { notice(error.message || String(error), true, source); }
   const detailSelection = (params) => JSON.stringify([params.get("page") || "rooms", params.get("room"), params.get("tab"), params.get("file"), params.get("view")]);
   function finishLoading() {
     clearTimeout(loadingTimer);
@@ -1158,15 +1263,13 @@
     for (const room of data.rooms) {
       const row = button("", () => change({ page: "rooms", room: room.room, file: "", q: null }), selected?.room === room.room);
       row.classList.add("room");
+      row.classList.toggle("selected", selected?.room === room.room);
       row.classList.toggle("outside-room", Boolean(room.outside));
       row.append(element("span", `${room.date}  ${room.title}`, "room-title"));
       if (room.description) row.append(element("span", room.description, "room-desc"));
       const status = element("span", undefined, "room-state");
-      status.append(element("span", room.state, statusClass(room.state)));
       if (room.outside) status.append(outsideBadge());
-      if (room.unanswered) status.append(element("span", `${labels.unanswered} ${room.unanswered}`, "badge unanswered"));
-      if (room.pending) status.append(element("span", `${labels.pending} ${room.pending}`, "badge pending"));
-      status.append(draftCountBadge(room.room));
+      appendRoomState(status, room);
       row.append(status);
       if (room.status) row.append(element("span", "status: " + room.status, "room-desc"));
       if (room.modified) row.append(element("span", "最終更新 " + new Date(room.modified * 1000).toLocaleString(), "room-desc"));
@@ -1180,15 +1283,26 @@
     if (!config) return;
     if (quiet && (refreshing || filterTimer || questionFilterTimer || Date.now() - lastRefreshFinished < 10000)) return;
     const ticket = ++generation;
+    const load = async (source, action) => {
+      try {
+        const result = await action();
+        if (ticket === generation && !quiet) clearNotice(source);
+        return result;
+      } catch (error) {
+        error.noticeSource ||= source;
+        throw error;
+      }
+    };
     requestController?.abort();
     requestController = new AbortController();
     const params = normalizeHash();
+    closeRoomConfirmation(params);
     syncSentQuestionFilters(params);
     finishLoading();
     refreshing = true;
-    notice(loaded ? "" : "読み込み中…");
+    $("refresh-status").textContent = loaded ? "更新中…" : "読み込み中…";
     $("refresh-status").hidden = false;
-    loadingTimer = setTimeout(() => { if (ticket === generation) notice("読み込み中…"); }, 500);
+    loadingTimer = setTimeout(() => { if (ticket === generation) $("refresh-status").textContent = "読み込み中…"; }, 500);
     for (const node of [$("rooms"), $("question-list"), content]) node.setAttribute("aria-busy", "true");
     content.classList.toggle("changing-selection", Boolean(renderedDetail?.selection && renderedDetail.selection !== detailSelection(params)));
     $("question-list").classList.toggle("changing-selection", Boolean(renderedQuestionParams && ["page", "room", "q"].some((key) => renderedQuestionParams.get(key) !== params.get(key))));
@@ -1199,7 +1313,7 @@
     updateSidebar();
     updatePanes();
     try {
-      const data = await api("/api/rooms?" + scope(params));
+      const data = await load("refresh", () => api("/api/rooms?" + scope(params)));
       if (ticket !== generation) return;
       const selected = data.rooms.find((room) => room.room === params.get("room")) || (page === "rooms" ? data.rooms[0] : null);
       if (page === "rooms" && selected && params.get("room") !== selected.room) {
@@ -1210,32 +1324,40 @@
         for (const key of ["room", "q", "file"]) params.delete(key);
         history.replaceState(null, "", "#" + params.toString());
       }
+      closeRoomConfirmation(params);
       renderRooms(data, selected);
       if (page === "rooms") {
         if (selected) {
           const results = await Promise.allSettled([
-            showRoom(selected, params, ticket, quiet),
-            (async () => {
+            load("room-detail", () => showRoom(selected, params, ticket, quiet)),
+            load("questions", async () => {
               const questions = await api("/api/questions?" + new URLSearchParams({ room: selected.room }));
               if (ticket === generation) renderQuestions([questions], params, ticket, true, quiet);
-            })()
+            })
           ]);
-          for (const result of results) if (result.status === "rejected") throw result.reason;
+          if (ticket !== generation) return;
+          // 並行した処理の失敗をすべて残し、成功した処理の通知だけを解除する。
+          for (const result of results) if (result.status === "rejected") showError(result.reason, result.reason.noticeSource);
+          if (results.some((result) => result.status === "rejected")) return;
         } else {
           renderQuestions([], params, ticket, true, quiet);
           showPlaceholder("該当する部屋はありません。部屋の条件を変えてください。");
         }
       } else {
-        const questions = await api("/api/questions/all?" + scope(params, true));
+        const question = await load("questions", async () => {
+          const questions = await api("/api/questions/all?" + scope(params, true));
+          if (ticket === generation) return renderQuestions(questions.rooms, params, ticket, false, quiet);
+        });
         if (ticket !== generation) return;
-        const question = renderQuestions(questions.rooms, params, ticket, false, quiet);
-        if (selected && question) await showRoom(selected, params, ticket, quiet);
+        if (selected && question) await load("room-detail", () => showRoom(selected, params, ticket, quiet));
         else {
           showPlaceholder("確認事項を選ぶと、その部屋のファイルを表示します");
         }
       }
-      if (ticket === generation) { loaded = true; notice(); }
-    } catch (error) { if (ticket === generation) showError(error); }
+      if (ticket === generation) {
+        loaded = true;
+      }
+    } catch (error) { if (ticket === generation) showError(error, error.noticeSource || "refresh"); }
     finally {
       if (ticket === generation) { lastRefreshFinished = Date.now(); finishLoading(); }
     }
@@ -1315,10 +1437,17 @@
   });
   document.querySelectorAll("[data-page]").forEach((node) => node.addEventListener("click", () => change({ page: node.dataset.page })));
   $("reload").addEventListener("click", () => refresh());
+  $("notice-close").addEventListener("click", () => clearNotice());
   $("theme").addEventListener("click", () => {
     theme = currentTheme() === "dark" ? "light" : "dark";
-    document.documentElement.className = theme;
+    applyTheme();
     try { localStorage.setItem("workroom-hub-theme", theme); } catch { /* 保存は任意 */ }
+    updateMarkdownTheme();
+  });
+  $("font").addEventListener("click", () => {
+    font = font === "ud" ? "" : "ud";
+    applyFont();
+    try { localStorage.setItem("workroom-hub-font", font); } catch { /* 保存は任意 */ }
     updateMarkdownTheme();
   });
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (!theme) updateMarkdownTheme(); });

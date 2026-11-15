@@ -264,7 +264,7 @@ fn markdown_options() -> Options {
     Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_FOOTNOTES
 }
 
-pub fn render(bytes: &[u8], theme: Option<&str>, hub_url: Option<&str>) -> String {
+pub fn render(bytes: &[u8], theme: Option<&str>, font: Option<&str>, hub_url: Option<&str>) -> String {
     let style = style_text();
     let text = String::from_utf8_lossy(bytes);
     let invalid_utf8 = std::str::from_utf8(bytes).is_err();
@@ -312,11 +312,17 @@ pub fn render(bytes: &[u8], theme: Option<&str>, hub_url: Option<&str>) -> Strin
     });
     let mut body = String::new();
     html::push_html(&mut body, events);
-    let class = match theme {
-        Some("dark") => " class=\"dark\"",
-        Some("light") => " class=\"light\"",
+    let theme_class = match theme {
+        Some("dark") => "dark",
+        Some("light") => "light",
         _ => "",
     };
+    let classes = [theme_class, if font == Some("ud") { "font-ud" } else { "" }]
+        .into_iter()
+        .filter(|class| !class.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let class = if classes.is_empty() { String::new() } else { format!(" class=\"{classes}\"") };
     let warning = if invalid_utf8 {
         "<p class=\"notice\">UTF-8 として読めない部分を置換文字で表示しています。</p>"
     } else {
@@ -357,17 +363,18 @@ mod tests {
     #[test]
     fn plain_urls_match_ba1e77e_html_snapshots() {
         // git show ba1e77e:src/hub/markdown.rs を target/ 下の一時プロジェクトで実行して生成。
-        // render() の出力全体を比較し、共通の HTML と CSS は1回だけ保存している。
+        // 保存しているのは ba1e77e の render() の <main> の中身だけ。共通の HTML と CSS は持たず、
+        // 現在の render() の出力から <main> の中身を取り出して比べる（md.css を変えても壊れない）。
         let snapshot: serde_json::Value =
             serde_json::from_str(include_str!("../../tests/fixtures/markdown_plain_urls.json")).unwrap();
-        let prefix = snapshot["prefix"].as_str().unwrap();
-        let suffix = snapshot["suffix"].as_str().unwrap();
         let cases = snapshot["cases"].as_array().unwrap();
         assert_eq!(cases.len(), 87);
         for case in cases {
             let input = case["input"].as_str().unwrap();
-            let expected = format!("{prefix}{}{suffix}", case["body"].as_str().unwrap());
-            assert_eq!(render(input.as_bytes(), None, None), expected, "入力: {input:?}");
+            let output = render(input.as_bytes(), None, None, None);
+            assert!(output.ends_with("</main></body></html>"), "入力: {input:?}");
+            let body = output.split_once("<main>").unwrap().1.rsplit_once("</main>").unwrap().0;
+            assert_eq!(body, case["body"].as_str().unwrap(), "入力: {input:?}");
         }
     }
 
@@ -401,7 +408,7 @@ mod tests {
         for &(input, expected) in cases {
             let urls: Vec<_> = url_ranges(input).into_iter().map(|range| &input[range]).collect();
             assert_eq!(urls, expected, "{input}");
-            let output = render(input.as_bytes(), None, None);
+            let output = render(input.as_bytes(), None, None, None);
             assert_eq!(output.matches("<a href=").count(), expected.len(), "{input}: {output}");
             for url in expected {
                 let url = escape(url);
@@ -418,7 +425,7 @@ mod tests {
     #[test]
     fn bare_urls_escape_both_href_and_label() {
         let input = "参考 https://example.com/a-b?x=1&y=2&title='yes' 次";
-        let output = render(input.as_bytes(), None, None);
+        let output = render(input.as_bytes(), None, None, None);
         let url = "https://example.com/a-b?x=1&amp;y=2&amp;title=&#39;yes";
         assert!(
             output.contains(&format!(
@@ -439,7 +446,7 @@ mod tests {
             "https://ja.wikipedia.org/wiki/Foo_(bar)",
             "https://example.com/trailing**",
         ] {
-            let output = render(url.as_bytes(), None, None);
+            let output = render(url.as_bytes(), None, None, None);
             assert!(
                 output.contains(&format!("<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>")),
                 "{url}: {output}"
@@ -499,7 +506,7 @@ mod tests {
             let expected = outside_emphasis(input, &url_range, &(0..=input.len()).collect::<Vec<_>>());
             assert!(!expected.is_empty(), "元から強調になる入力であること: {input}");
             assert_eq!(outside_emphasis(&source, &url_range, &positions), expected, "{input}");
-            let output = render(input.as_bytes(), None, None);
+            let output = render(input.as_bytes(), None, None, None);
             assert!(
                 output.contains(&format!("<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>")),
                 "{input}: {output}"
@@ -515,7 +522,7 @@ mod tests {
             ("**https://example.com/x)**を参照", "https://example.com/x)**"),
         ] {
             assert!(!Parser::new(input).any(|event| matches!(event, Event::Start(Tag::Strong))), "{input}");
-            let output = render(input.as_bytes(), None, None);
+            let output = render(input.as_bytes(), None, None, None);
             assert!(!output.contains("<strong>"), "{input}");
             assert!(
                 output.contains(&format!(
@@ -525,12 +532,12 @@ mod tests {
             );
             assert_eq!(url_ranges(input).into_iter().map(|range| &input[range]).collect::<Vec<_>>(), [url]);
         }
-        let output = render("**x_**を参照".as_bytes(), None, None);
+        let output = render("**x_**を参照".as_bytes(), None, None, None);
         assert!(output.contains("<p>**x_**を参照</p>"));
     }
 
     fn main_html(input: &str) -> String {
-        let output = render(input.as_bytes(), None, None);
+        let output = render(input.as_bytes(), None, None, None);
         let body = output.split_once("<main>").unwrap().1.rsplit_once("</main>").unwrap().0;
         body.replace(" target=\"_blank\" rel=\"noopener noreferrer\"", "")
     }
@@ -629,10 +636,10 @@ mod tests {
 
     #[test]
     fn escaped_emphasis_markers_and_duplicate_reference_definitions_preserve_links() {
-        let output = render(br"*see https://a.example/x\**", None, None);
+        let output = render(br"*see https://a.example/x\**", None, None, None);
         assert!(output.contains("<em>see <a href=\"https://a.example/x*\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x*</a></em>"));
         let input = "[x]: https://a.example/_a_\n[x]: https://b.example/_b_.\n\n[x]";
-        let output = render(input.as_bytes(), None, None);
+        let output = render(input.as_bytes(), None, None, None);
         assert!(output.contains("href=\"https://a.example/_a_\""));
         assert!(!output.contains("https://b.example/"));
         assert_eq!(output.matches("<a href=").count(), 1);
@@ -647,7 +654,7 @@ mod tests {
             ("*https://example.com/a*", "https://example.com/a", "em"),
             ("__https://example.com/b__", "https://example.com/b", "strong"),
         ] {
-            let output = render(input.as_bytes(), None, None);
+            let output = render(input.as_bytes(), None, None, None);
             assert!(
                 output.contains(&format!(
                     "<{tag}><a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a></{tag}>"
@@ -657,7 +664,7 @@ mod tests {
             assert_eq!(output.matches("<a href=").count(), 1, "{input}");
         }
         for input in ["**https://**", "_http://_"] {
-            assert!(!render(input.as_bytes(), None, None).contains("<a href="), "{input}");
+            assert!(!render(input.as_bytes(), None, None, None).contains("<a href="), "{input}");
         }
     }
 
@@ -670,7 +677,7 @@ mod tests {
             ("~~旧 https://example.com/x~~", "<del>旧 ", "</del>"),
             ("**(https://example.com/x)**", "<strong>(", ")</strong>"),
         ] {
-            let output = render(input.as_bytes(), None, None);
+            let output = render(input.as_bytes(), None, None, None);
             assert!(
                 output.contains(&format!(
                     "{before}<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>{after}"
@@ -689,7 +696,7 @@ mod tests {
             ("**参考：https://example.com/x.;!?**", "https://example.com/x", ".;!?</strong>"),
             ("**(https://ja.wikipedia.org/wiki/Foo_(bar))**", "https://ja.wikipedia.org/wiki/Foo_(bar)", ")</strong>"),
         ] {
-            let output = render(input.as_bytes(), None, None);
+            let output = render(input.as_bytes(), None, None, None);
             assert!(
                 output.contains(&format!(
                     "href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>{suffix}"
@@ -717,7 +724,7 @@ mod tests {
                 "https://example.com/title",
             ),
         ] {
-            let output = render(input.as_bytes(), None, None);
+            let output = render(input.as_bytes(), None, None, None);
             assert!(output.contains(&format!("<a href=\"{destination}\" title=\"{title}\" target=\"_blank\" rel=\"noopener noreferrer\">{label}</a>")), "{input}: {output}");
             assert_eq!(output.matches("<a href=").count(), 1, "{input}");
         }
@@ -728,7 +735,7 @@ mod tests {
         let url = "https://example.com/a";
         for escapes in 1..=3 {
             let input = format!("|a|b|\n|-|-|\n| {url}{}|b | c |", "\\".repeat(escapes));
-            let output = render(input.as_bytes(), None, None);
+            let output = render(input.as_bytes(), None, None, None);
             let body = output.split_once("<main>").unwrap().1.split_once("</main>").unwrap().0;
             assert_eq!(body.matches("<td>").count(), 2, "{body}");
             assert!(body.contains("<td>c</td>"), "{body}");
@@ -746,20 +753,21 @@ mod tests {
         for input in
             ["https://example.com/a\\\n続き", "https://example.com/a\\\r\n続き", "https://example.com/a  \n続き"]
         {
-            let output = render(input.as_bytes(), None, None);
+            let output = render(input.as_bytes(), None, None, None);
             assert!(output.contains("<a href=\"https://example.com/a\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/a</a><br />\n続き"), "{input}: {output}");
         }
     }
 
     #[test]
     fn escaped_angles_intraword_underscores_and_url_footnote_labels_keep_original_text() {
-        let output = render(br"\<https://example.com/a>", None, None);
+        let output = render(br"\<https://example.com/a>", None, None, None);
         assert!(output.contains("&lt;<a href=\"https://example.com/a\""));
         assert!(output.contains("</a>&gt;"));
-        let output = render(b"snake_https://example.com/a_", None, None);
+        let output = render(b"snake_https://example.com/a_", None, None, None);
         assert!(output.contains("snake_<a href=\"https://example.com/a_\""));
         assert!(!output.contains("<em>"));
-        let output = render("参照[^https://example.com/n]\n\n[^https://example.com/n]: 脚注".as_bytes(), None, None);
+        let output =
+            render("参照[^https://example.com/n]\n\n[^https://example.com/n]: 脚注".as_bytes(), None, None, None);
         assert!(output.contains("href=\"#https://example.com/n\""), "{output}");
         assert!(output.contains("id=\"https://example.com/n\""), "{output}");
     }
@@ -767,7 +775,7 @@ mod tests {
     #[test]
     fn table_urls_stop_at_cell_separators_and_do_not_hide_urls_in_later_cells() {
         let input = "|a|b|\n|-|-|\n|a|https://example.com/t|\n|https://example.com/u|https://example.com/v|\n\nhttps://example.com/a|b";
-        let output = render(input.as_bytes(), None, None);
+        let output = render(input.as_bytes(), None, None, None);
         assert!(output.contains("<table>"));
         assert_eq!(output.matches("<td>").count(), 4);
         assert_eq!(output.matches("<a href=").count(), 4);
@@ -785,7 +793,7 @@ mod tests {
     #[test]
     fn source_escapes_and_character_references_are_decoded_before_linking() {
         let input = r"https://example.com/a\_b?x=1&amp;y=2";
-        let output = render(input.as_bytes(), None, None);
+        let output = render(input.as_bytes(), None, None, None);
         let escaped = escape("https://example.com/a_b?x=1&y=2");
         assert!(
             output.contains(&format!(
@@ -800,7 +808,7 @@ mod tests {
     fn symbol_urls_decode_character_references_and_preserve_existing_link_attributes() {
         let input = "https://example.com/_a_?x=1&amp;y=2";
         let escaped = escape("https://example.com/_a_?x=1&y=2");
-        let output = render(input.as_bytes(), None, None);
+        let output = render(input.as_bytes(), None, None, None);
         // 記号を含む URL も、通常の Text と同じく文字参照を解釈してからリンクにする。
         assert!(
             output.contains(&format!(
@@ -808,7 +816,7 @@ mod tests {
             ))
         );
         let url = "https://example.com/_a_";
-        let output = render(format!("{url} <{url}>").as_bytes(), None, None);
+        let output = render(format!("{url} <{url}>").as_bytes(), None, None, None);
         assert!(output.contains(&format!("<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>")));
         assert!(output.contains(&format!(
             "<a href=\"{url}\" title=\"\" target=\"_blank\" rel=\"noopener noreferrer\">{url}</a>"
@@ -818,20 +826,24 @@ mod tests {
     #[test]
     fn source_offsets_preserve_excluded_spans_and_use_the_bom_stripped_input() {
         let input = "\u{feff}日本語 https://example.com/_a_\n\n[https://example.com/link](https://example.com/destination) ![https://example.com/alt](image.svg) `https://example.com/code`\n\n<div>https://example.com/html</div>\n\nhttps://example.com/after";
-        let output = render(input.as_bytes(), None, None);
+        let output = render(input.as_bytes(), None, None, None);
         assert_eq!(output.matches("<a href=").count(), 3);
         assert!(output.contains("<p>日本語 <a href=\"https://example.com/_a_\""));
         assert!(output.contains("alt=\"https://example.com/alt\""));
         assert!(output.contains("<code>https://example.com/code</code>"));
         assert!(output.contains("&lt;div&gt;https://example.com/html&lt;/div&gt;"));
         assert!(output.contains("href=\"https://example.com/after\""));
-        assert!(render(b"<https://example.com/unclosed", None, None).contains("&lt;<a href="));
+        assert!(render(b"<https://example.com/unclosed", None, None, None).contains("&lt;<a href="));
     }
 
     #[test]
     fn urls_between_inline_html_tags_are_linked_and_the_tags_stay_escaped_text() {
-        let output =
-            render(b"\xe6\x96\x87 <b>https://example.com/</b> <script>https://example.com/s</script>", None, None);
+        let output = render(
+            b"\xe6\x96\x87 <b>https://example.com/</b> <script>https://example.com/s</script>",
+            None,
+            None,
+            None,
+        );
         assert!(output.contains(
             "&lt;b&gt;<a href=\"https://example.com/\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/</a>&lt;/b&gt;"
         ));
@@ -853,27 +865,27 @@ mod tests {
             "<script>https://example.com/script</script>\n",
             "文 <span title=\"https://example.com/attribute\">文字</span>",
         ] {
-            let output = render(input.as_bytes(), None, None);
+            let output = render(input.as_bytes(), None, None, None);
             assert!(!output.contains("<a href="), "{input}: {output}");
             assert!(output.contains("https://example.com/"), "{input}");
             assert!(!output.contains("<script>"));
         }
         for input in ["[https://example.com/label](https://example.com/destination)", "<https://example.com/autolink>"]
         {
-            assert_eq!(render(input.as_bytes(), None, None).matches("<a href=").count(), 1, "{input}");
+            assert_eq!(render(input.as_bytes(), None, None, None).matches("<a href=").count(), 1, "{input}");
         }
-        let output = render(b"![https://example.com/alt](image.svg)", None, None);
+        let output = render(b"![https://example.com/alt](image.svg)", None, None, None);
         assert!(output.contains("alt=\"https://example.com/alt\""));
         assert!(!output.contains("&lt;a"));
         // 除外した場所を抜けた後の本文では、再びリンクにする。
-        let output = render(b"<div>https://example.com/html</div>\n\n`code` [x](javascript:evil) ![alt](image.svg)\n\n```\ncode\n```\n\nhttps://example.com/after", None, None);
+        let output = render(b"<div>https://example.com/html</div>\n\n`code` [x](javascript:evil) ![alt](image.svg)\n\n```\ncode\n```\n\nhttps://example.com/after", None, None, None);
         assert_eq!(output.matches("<a href=").count(), 1);
         assert!(output.contains("href=\"https://example.com/after\""));
     }
 
     #[test]
     fn escapes_html_and_removes_unsafe_link_and_image_schemes() {
-        let output = render(b"<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[x](javascript:alert) ![alt](data:text/html,evil) [y](JaVaScRiPt:evil) [z](javascript&colon;evil)", None, None);
+        let output = render(b"<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[x](javascript:alert) ![alt](data:text/html,evil) [y](JaVaScRiPt:evil) [z](javascript&colon;evil)", None, None, None);
         assert!(output.contains("&lt;script&gt;"));
         assert!(output.contains("&lt;img"));
         assert!(!output.contains("<script>"));
@@ -886,7 +898,7 @@ mod tests {
 
     #[test]
     fn preserves_relative_links_images_and_extensions_and_marks_external_links() {
-        let output = render(b"[next](../docs/a.md) ![image](images/a.png) [web](https://example.com/?a=1&b=2)\n\n|a|b|\n|-|-|\n|1|2|\n\n- [x] done\n\n~~old~~ note[^1]\n\n[^1]: footnote", Some("dark"), None);
+        let output = render(b"[next](../docs/a.md) ![image](images/a.png) [web](https://example.com/?a=1&b=2)\n\n|a|b|\n|-|-|\n|1|2|\n\n- [x] done\n\n~~old~~ note[^1]\n\n[^1]: footnote", Some("dark"), None, None);
         assert!(output.contains("href=\"../docs/a.md\""));
         assert!(output.contains("src=\"images/a.png\""));
         assert!(output.contains("target=\"_blank\" rel=\"noopener noreferrer\""));
@@ -898,8 +910,30 @@ mod tests {
     }
 
     #[test]
+    fn font_accepts_only_ud_and_combines_with_the_theme() {
+        for (theme, font, expected) in [
+            (None, None, "<html lang=\"ja\">"),
+            (None, Some("ud"), "<html lang=\"ja\" class=\"font-ud\">"),
+            (Some("dark"), Some("ud"), "<html lang=\"ja\" class=\"dark font-ud\">"),
+            (Some("light"), Some("ud"), "<html lang=\"ja\" class=\"light font-ud\">"),
+            (Some("dark"), Some("UD"), "<html lang=\"ja\" class=\"dark\">"),
+            (None, Some(""), "<html lang=\"ja\">"),
+            (Some("light"), Some("system"), "<html lang=\"ja\" class=\"light\">"),
+            (Some("invalid"), Some("ud"), "<html lang=\"ja\" class=\"font-ud\">"),
+            (None, Some("\"><script>"), "<html lang=\"ja\">"),
+        ] {
+            let output = render(b"# title", theme, font, None);
+            assert!(output.starts_with(&format!("<!doctype html>{expected}")), "{theme:?} {font:?}");
+            assert!(!output.contains("<script>"));
+            let style = output.split_once("<style>").unwrap().1.split_once("</style>").unwrap().0;
+            let hash = base64(&Sha256::digest(style.as_bytes()));
+            assert!(csp(49123).contains(&format!("style-src 'sha256-{hash}'")));
+        }
+    }
+
+    #[test]
     fn embedded_style_hash_matches_csp_and_invalid_utf8_is_visible() {
-        let output = render(b"bad\xff", Some("\"><script>"), None);
+        let output = render(b"bad\xff", Some("\"><script>"), None, None);
         let style = output.split_once("<style>").unwrap().1.split_once("</style>").unwrap().0;
         let hash = base64(&Sha256::digest(style.as_bytes()));
         let policy = csp(49123);
@@ -918,7 +952,7 @@ mod tests {
         let input = "<reader@example.invalid> [明示](mailto:writer@example.invalid)";
         let mut default_html = String::new();
         html::push_html(&mut default_html, Parser::new(input));
-        let output = render(input.as_bytes(), None, None);
+        let output = render(input.as_bytes(), None, None, None);
         for href in ["href=\"mailto:reader@example.invalid\"", "href=\"mailto:writer@example.invalid\""] {
             assert!(default_html.contains(href));
             assert!(output.contains(href));
@@ -943,7 +977,7 @@ mod tests {
             url,
             "http://127.0.0.1:49123/#page=rooms&room=EXAMPLE%2F2026-11-03-%E8%AA%BF%E6%9F%BB&tab=files&file=docs%2F%E5%A0%B1%E5%91%8A%20%26%20a%2B1.md.txt&status=all&period=0&scope=filtered&q=&view=preview"
         );
-        let output = render(b"# title", None, Some(&url));
+        let output = render(b"# title", None, None, Some(&url));
         assert!(output.contains(&format!("href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\"", escape(&url))));
         assert!(output.find("ハブでこのファイルを開く").unwrap() < output.find("<main>").unwrap());
         assert!(csp(49123).starts_with("sandbox allow-popups allow-popups-to-escape-sandbox; default-src 'none';"));
