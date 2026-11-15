@@ -7,7 +7,7 @@
 
 use anyhow::{Result, bail};
 use clap::ValueEnum;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -49,6 +49,58 @@ pub fn write_cwd_file(cwd_file: Option<&Path>, dest: &Path, then: Option<&str>) 
 /// ファイラーで開く。TUI の画面を崩さないよう、起動したプログラムの出力は捨てる
 pub fn open_in_filer(path: &Path) -> Result<()> {
     open_with_os(path.as_os_str())
+}
+
+/// OS に渡すパスから Windows のドライブ・UNC の verbatim prefix を外す。
+/// 文字列の変換だけを行い、通常のパスと非 Unicode のパスはそのまま保つ。
+pub fn strip_verbatim_for_open(path: &OsStr) -> OsString {
+    let Some(text) = path.to_str() else { return path.to_owned() };
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{unc}").into();
+    }
+    if let Some(drive) = text.strip_prefix(r"\\?\")
+        && drive.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && drive.as_bytes().get(1..3) == Some(b":\\")
+    {
+        return drive.into();
+    }
+    path.to_owned()
+}
+
+/// ファイル・フォルダ専用。Windows ではカンマも含めて1つのパスとして引用する。
+pub fn open_path_with_os(path: &OsStr) -> Result<()> {
+    use anyhow::Context;
+    let mut command = os_open_path_command(path)?;
+    command.spawn().with_context(|| {
+        format!("{} を起動できません: {}", command.get_program().to_string_lossy(), path.to_string_lossy())
+    })?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn explorer_path_argument(path: &OsStr) -> Result<OsString> {
+    let bytes = path.as_encoded_bytes();
+    if bytes.is_empty() || bytes.contains(&b'"') || bytes.last() == Some(&b'\\') {
+        bail!("空のパス、引用符を含むパス、末尾がバックスラッシュのパスは開けません");
+    }
+    let mut quoted = OsString::from("\"");
+    quoted.push(path);
+    quoted.push("\"");
+    Ok(quoted)
+}
+
+fn os_open_path_command(path: &OsStr) -> Result<Command> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new("explorer");
+        command.raw_arg(explorer_path_argument(path)?).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        Ok(command)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(os_open_command(path))
+    }
 }
 
 /// パスや URL を OS の既定のアプリで開く。起動したプログラムの出力は捨てる。
@@ -178,6 +230,49 @@ __CMD__() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn path_opener_always_quotes_explorer_arguments_without_launching_it() {
+        for path in [r"C:\work\evil.exe,x.md", r"C:\work\報告 書.md", r"\\server\share\a,b.md", r"C:\work\a&b.txt"] {
+            let quoted = explorer_path_argument(OsStr::new(path)).unwrap();
+            assert_eq!(quoted, OsString::from(format!("\"{path}\"")));
+            let command = os_open_path_command(OsStr::new(path)).unwrap();
+            assert_eq!(command.get_program(), OsStr::new("explorer"));
+            assert_eq!(command.get_args().collect::<Vec<_>>(), [quoted.as_os_str()]);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_opener_rejects_quotes_empty_paths_and_trailing_backslashes() {
+        for path in ["", "C:\\work\\a\"b.md", "C:\\", "C:\\work\\"] {
+            assert!(os_open_path_command(OsStr::new(path)).is_err(), "{path}");
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn path_opener_preserves_literal_arguments_on_other_platforms() {
+        let path = OsStr::new("/work/evil.exe,x.md");
+        let command = os_open_path_command(path).unwrap();
+        assert_eq!(command.get_program(), os_open_command(path).get_program());
+        assert_eq!(command.get_args().collect::<Vec<_>>(), [path]);
+    }
+
+    #[test]
+    fn strips_verbatim_drive_and_unc_prefixes_without_os_calls() {
+        for (input, expected) in [
+            (r"\\?\C:\work\報告.md", r"C:\work\報告.md"),
+            (r"\\?\UNC\server\share\報告.md", r"\\server\share\報告.md"),
+            (r"\\.\C:\work\報告.md", r"\\.\C:\work\報告.md"),
+            (r"\\?\Volume{example}\報告.md", r"\\?\Volume{example}\報告.md"),
+            (r"C:\work\報告.md", r"C:\work\報告.md"),
+            ("/work/報告.md", "/work/報告.md"),
+        ] {
+            assert_eq!(strip_verbatim_for_open(OsStr::new(input)), OsStr::new(expected));
+        }
+    }
 
     #[test]
     fn os_opener_passes_paths_and_urls_as_one_literal_argument() {

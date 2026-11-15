@@ -1,4 +1,4 @@
-//! 一時ディレクトリと生の HTTP だけで、ハブの読み取りと回答の追記を検証する。
+//! 一時ディレクトリと生の HTTP で、読み取り・回答の追記と OS で開く要求の拒否を検証する。
 
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -342,7 +342,7 @@ fn lists_states_questions_and_files_without_any_disk_writes() {
         assert_eq!(hub.get(&format!("{prefix}{name}")).status, 200);
     }
     assert_eq!(hub.request("POST", "/api/answers", None).status, 411);
-    assert_eq!(hub.request("POST", "/api/open", None).status, 405);
+    assert_eq!(hub.request("POST", "/api/open", None).status, 411);
     assert_eq!(snapshot(&env.base), before);
     // サイズの変化を検知し、再起動せずに確認事項のキャッシュを更新する。
     fs::write(room.join("ANSWERS.jsonl"), "").unwrap();
@@ -1004,6 +1004,46 @@ fn answer_framing_errors_are_json_and_host_is_checked_before_body() {
     headers.push(("Content-Length".into(), "0".into()));
     assert_answer_error(&hub.raw_request("POST", "/api/answers", &headers, &[]), 400, None, &token);
     assert_eq!(hub.request("POST", "/api/missing", None).status, 405);
+    assert_eq!(snapshot(&env.base), before);
+}
+
+#[test]
+fn open_rejects_invalid_requests_without_launching_os_apps_or_changing_files() {
+    let env = Env::new();
+    fixture(&env);
+    let hub = env.start(&[]);
+    let token = hub.token();
+    let before = snapshot(&env.base);
+    // ヘッダの検査が退行しても開けないよう、本文にも存在しない対象を使う。
+    let bytes = serde_json::to_vec(&json!({"room":"2026-11-03-open-missing","path":"missing.md"})).unwrap();
+    // 実バイナリを起動するため、成功経路は送らない。単体テストの記録用 opener で検証する。
+    for (name, value) in [("X-Workroom-Token", None), ("Origin", Some("http://evil.example"))] {
+        let mut headers = hub.answer_headers(&token, &bytes);
+        headers.retain(|(key, _)| key != name);
+        if let Some(value) = value {
+            headers.push((name.into(), value.into()));
+        }
+        assert_answer_error(&hub.raw_request("POST", "/api/open", &headers, &bytes), 403, None, &token);
+    }
+    let mut headers = hub.answer_headers(&token, &[]);
+    headers.retain(|(key, _)| key != "Content-Length");
+    assert_answer_error(&hub.raw_request("POST", "/api/open", &headers, &[]), 411, None, &token);
+    for (bytes, status) in [
+        (b"{".as_slice(), 400),
+        (br#"{"room":"2026-11-03-missing"}"#, 404),
+        (br#"{"room":"2026-11-03-missing","path":"../README.md"}"#, 404),
+    ] {
+        assert_answer_error(
+            &hub.raw_request("POST", "/api/open", &hub.answer_headers(&token, bytes), bytes),
+            status,
+            None,
+            &token,
+        );
+    }
+    for target in ["/api/openx", "/api/open/x"] {
+        assert_eq!(hub.request("POST", target, None).status, 405);
+    }
+    assert_eq!(hub.request("OPTIONS", "/api/open", None).status, 405);
     assert_eq!(snapshot(&env.base), before);
 }
 

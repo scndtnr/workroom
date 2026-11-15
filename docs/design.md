@@ -188,7 +188,7 @@ ID は `Q-YYYYMMDD-NN`。日付は `room::today(settings)`（`day_start_hour` �
 - 待ち受けは `127.0.0.1` だけ。ポートは `--port`、なければ設定 `hub_port`（既定 47100）。0 は OS に選ばせる。Host と CSP には `listener.local_addr()` の実際のポートを使う。
 - 標準出力の1行目は `http://127.0.0.1:<port>/` だけで、すぐ flush する。案内は標準エラー。既定では OS のブラウザを開き、`--no-open` で抑止する。終了は `Ctrl+C`。
 - ポートが使用中なら、2秒のタイムアウトで `/api/hello` を照会する。同じ作業ルートのハブなら URL を表示して開き、終了する。異なるルートや別のサーバなら `--port` を案内してエラーにする。hello はアプリ名と正規化したルートの SHA-256 だけを返す。
-- 標準ライブラリの `TcpListener` で接続ごとにスレッドを作る。同時32接続までで、超過は503。読み取り10秒・書き込み60秒、要求行を含むヘッダは16 KiB、ヘッダと宣言された本文の合計は1 MiBまで（431 / 413）。`POST /api/answers` の本文は Content-Length の長さだけ読み、欠落は411、途中で終われば400。Transfer-Encoding と重複した Content-Length は受け付けない。それ以外の GET 以外の要求は従来どおり405で閉じ、本文は読まない。
+- 標準ライブラリの `TcpListener` で接続ごとにスレッドを作る。同時32接続までで、超過は503。読み取り10秒・書き込み60秒、要求行を含むヘッダは16 KiB、ヘッダと宣言された本文の合計は1 MiBまで（431 / 413）。`POST /api/answers` と `POST /api/open` の本文は Content-Length の長さだけ読み、欠落は411、途中で終われば400。Transfer-Encoding と重複した Content-Length は受け付けない。本文を読む POST と JSON のエラーを返す POST は共通の判定を使い、クエリを除いた URL が完全一致する場合だけを対象にする。それ以外の GET 以外の要求は従来どおり405で閉じ、本文は読まない。
 - 応答は HTTP/1.1・`Connection: close`・Content-Length 付き。ファイルはメタデータの長さを上限に `io::copy` で流す。Range・keep-alive・chunked・TLS は持たない。要求ログは出さず、エラーだけを標準エラーに出す。
 
 ### URL と読み取り API
@@ -197,7 +197,7 @@ ID は `Q-YYYYMMDD-NN`。日付は `room::today(settings)`（`day_start_hour` �
 |---|---|
 | `/`、`/assets/app.js`、`/assets/app.css` | 埋め込んだ画面 |
 | `/api/hello` | `app: "workroom"` と `root_hash` |
-| `/api/config` | 表示用の作業ルートと起動時の絞り込み、コマンドの引用に使う `shell`（Windows は `powershell`、それ以外は `posix`） |
+| `/api/config` | 表示用の作業ルートと起動時の絞り込み、コマンドの引用に使う `shell`（Windows は `powershell`、それ以外は `posix`）、OS で開ける拡張子の配列 `open_extensions` |
 | `/api/rooms?q=&status=active\|done\|all&period=0\|1&days=N&range=within\|before&scope=filtered\|all&sort=date\|updated\|unanswered&unanswered=0\|1&keep=<ラベル>` | 部屋・説明・状態・件数・README の status・最終更新・警告、条件の要約。`count` は条件内の部屋数 |
 | `/api/files?room=<ラベル>` | 成果物の `main` とその他の `other`。各区分の `items` と `omitted` |
 | `/api/questions?room=<ラベル>` | `room`・`questions`・`warnings`（`q show --all --json` と同じモデル）、読み取りエラーと旧形式のファイル名 |
@@ -223,6 +223,21 @@ room は部分一致を使わない。URL を `/` で区切ってから各要素
 - 本文は CRLF と CR を LF にそろえ、前後の空行（空白だけの行も含む）を削る。中の空行、字下げ、行末の空白、記号は保つ。`not_needed` の本文は空でもよい。各レコードに回答件数＋1の n、既存の q コマンドと同じローカル日時（RFC 3339・秒まで）、ask の写しを付ける。
 - 全件を検査・JSON 化してから、末尾に LF がなければ区切りを足し、1回の `write_all` でまとめて追記する。検査に1件でも失敗すると1件も書かない。UTF-8・BOM なし・LF で、日本語はエスケープしない。解決済みへの追加回答も受け付け、回答済み・未反映に戻す。
 - 成功は200で、`{"questions": <GET /api/questions と同じモデル>, "sent": [<送信した ID>]}` を返す。エラーは日本語の error と、該当する場合は id を持つ JSON。API と同じ `Cache-Control: no-store`・CORP・nosniff を付ける。未知の POST の URL は405を維持する。
+
+### OS で開く API
+
+PR4c1 の `POST /api/open` は `{"room":"EXAMPLE/2026-11-03-調査","path":"docs/報告.md","folder":false}` を受け付ける。`room` は必須、`path` は省略でき、`folder` は省略時 false。知らないキーは無視する。`path` は `/` 区切りの部屋からの相対パスで、JSON の平文として扱い、パーセントデコードしない。
+
+- Host → 回答の API と同じ `write_allowed`（Origin・Content-Type・トークン・Sec-Fetch-Site）→ JSON 本文の順に検査する。Host 不一致は421、書き込み検査に通らなければ403、壊れた JSON や型の不一致は400。
+- 部屋は `paths::room_path`、対象は `/f/` と共通の解決処理を使う。`valid_component` で要素を検査し、部屋を特定して join・canonicalize・`starts_with(room)` を確かめる。さらに canonicalize 後の実名についても、部屋より下の全要素を `valid_component` で検査する。空の要素・ドットで始まる要素・`..`・バックスラッシュ・コロン・予約名・末尾のドットや空白など、不正なパス、存在しない部屋や対象、シンボリックリンクやジャンクションで部屋の外を指すものは404。リンク先の実名の検査は `/f/` にも適用する。
+- `path` がなければ部屋のフォルダを開く。対象がディレクトリなら `folder` にかかわらずそのディレクトリ、ファイルで `folder: true` なら親フォルダを開く。ファイルだけを開く場合は、canonicalize 後の最終パスの拡張子を大文字小文字を区別せず判定する。
+- macOS の `open` は、実体がディレクトリでも `.app` などのバンドルを渡すとアプリとして起動する。そのため、フォルダとして開く全経路で、canonicalize 後の対象と祖先の要素を部屋からの相対で調べる。拡張子が `app`・`bundle`・`framework`・`plugin`・`kext`・`prefpane`・`appex`・`xpc`・`workflow`・`action`・`saver`・`qlgenerator`・`mdimporter`・`pkg`・`mpkg` のいずれかなら（大文字小文字を区別しない）、最も外側の該当要素の親を部屋の中で開く。拡張子が `{` で始まり `}` で終わる Windows の `名前.{CLSID}` 形式と、`Contents/Info.plist` または `Contents/MacOS` を持つディレクトリにも同じ規則を適用する。構造の照会に失敗した場合も安全側で回避する。全 OS で同じ規則を使い、名前の判定とフォルダの選択を行う純粋な部分と、ファイル構造の照会を分ける。
+- 回避して開く場合も `opened: "folder"` とし、「アプリとして扱われるフォルダ（.app）は開かず、外側のフォルダを開くよう OS に依頼しました」、構造や CLSID なら「アプリなどとして扱われるフォルダは開かず、外側のフォルダを開くよう OS に依頼しました」を返す。部屋自体がこれらに該当する場合は、フォルダを開かず422と日本語の JSON エラー「アプリなどとして扱われるフォルダは開けません」を返し、opener を呼ばない。許可した拡張子のファイルを既定のアプリで開く経路にはこの規則を当てず、`x.app/readme.md` などはファイルとして開ける。
+- 許可する拡張子は `md`・`txt`・`html`・`htm`・`pdf`・`png`・`jpg`・`jpeg`・`gif`・`webp`・`bmp`・`svg`・`csv`・`tsv`・`xlsx`・`docx`・`pptx`・`json`・`yaml`・`yml`・`toml`・`log`。許可外や拡張子なしはファイルを開かず、親フォルダを開くよう OS に依頼した旨を通知する。たとえば `a.md.exe` は許可外で、`a.md` というリンクが `x.exe` を指す場合も許可外になる。許可リストの正本は Rust の定数1つとし、`/api/config` の `open_extensions` に載せる。JavaScript はこれを読んでボタンの表示だけを決める。
+- 境界の検査は canonicalize した値で行い、OS に渡す直前に Windows の verbatim prefix を外す。`\\?\C:\…` は `C:\…`、`\\?\UNC\server\share\…` は `\\server\share\…` にする。Windows ではさらに `std::path::absolute` に渡した結果が prefix を外した値と一致することを確かめ、不一致や失敗は422と日本語の JSON エラーにして opener を呼ばない。フォルダを開くだけで、ファイルの選択はしない。
+- ハブの本番の opener はパス専用の `shell::open_path_with_os` を使う。Windows では `CommandExt::raw_arg` でパス全体を常に引用符で囲み、カンマなどが explorer の区切りと解釈されるのを防ぐ。空のパス、引用符を含むパス、末尾がバックスラッシュのパスはエラーにする。Windows 以外は従来と同じく1つの引数で渡す。URL や TUI でも使う既存の `shell::open_with_os` は変更しない。
+- 成功は200で、例は `{"opened":"file","message":"既定のアプリで開くよう OS に依頼しました"}`。フォルダの場合は `opened: "folder"`。OS に依頼した時点までの結果とし、フォルダなら「フォルダを開くよう OS に依頼しました」などを返す。起動そのものに失敗したら標準エラーに記録して500を返す。エラーは日本語の `{"error":"…"}` で、成功・エラーとも `Cache-Control: no-store`・CORP・nosniff を付ける。
+- 残るリスク：HTML・SVG は意図どおり既定のブラウザで `file://` として開かれ、ハブの sandbox の外で動く。Windows では `desktop.ini` などでフォルダの表示先が転送される場合がある。macOS のパッケージのビット（FinderInfo）やアプリが登録したパッケージの型は判定しない。検査から起動までの間にリンクへ差し替えられる余地もある。
 
 ### 回答のフォーム・下書き・送信
 
@@ -259,6 +274,8 @@ room は部分一致を使わない。URL を `/` で区切ってから各要素
 - 成果物一覧はファイルの中身を読まず、`fsinfo::entries` に区分ごとに深さ4・総件数500を渡す。深さ内の省略件数も返す。`exclude` とドットで始まる名前を各階層で除き、区分を分ける除外は起点直下だけに適用する。リンク先は再帰しない。`disk_usage` は呼ばない。
 - 主な表示は `outputs/`・`docs/`・`artifacts/`・`out/` と直下の成果物。README・AGENTS・QUESTIONS.jsonl・ANSWERS.jsonl と `log.md` はその他に置き、`interim/`・`sources/`・`scripts/`・`logs/`・`tmp/` などもその他にする。新旧の構成は混在してよい。README がない部屋はファイル一覧を表示する。
 - 成果物タブのファイル列には主な表示と、既定で畳んだ「その他のファイル」のグループを並べる。どちらも選択すれば同じ領域でプレビューでき、その他のファイルを選択した状態ではそのグループを開いておく。ファイル列そのものも畳め、部屋の一覧と別の localStorage キーで開閉を保存する。畳むとプレビューが空いた幅を使う。旧 `tab=other` の URL も成果物タブで開く。
+- プレビューのツールバーでは「ファイルだけを開く」の後に「既定のアプリで開く」と「フォルダを開く」を置く。前者は `/api/config` の `open_extensions` に拡張子がある場合だけ表示して `{room, path}` を送り、後者は `{room, path, folder: true}` を送る。部屋の見出しには「部屋のフォルダを開く」を置き、`{room}` を送る。既存のボタンと同じ墨色にし、狭い幅ではツールバー内でも折り返す。
+- 開く操作は JSON の Content-Type と meta のトークンを付けて送る。確認ダイアログは使わず、送信中は押したボタンを無効にする。成功の message と失敗の error は上部の通知の帯へ、発生元 `open` として登録し、プレビューや再取得の通知も保持する。JSON を読めない応答では HTTP の状態コードを含む日本語のエラーを出す。
 - 旧形式の `QUESTIONS.md`・`確認事項.md` は解析せず、「旧形式」として Markdown を表示する。
 - 素の JavaScript を使い、エージェント由来の文は `textContent` またはテキストノードとリンク要素で入れる。HTML はハブの DOM に入れず iframe で表示する。移動・条件の変更・⟳ は即座に再取得し、取得中も部屋の一覧・確認事項・ファイルと件数を残す。新しい DOM を組み立ててから各部分を1回で差し替え、選択を変えたときの古いファイル欄は aria-busy と半透明で示す。ヘッダの `refresh-status` に小さく「更新中…」を出し、初回と500msを超えた取得では同じ場所を「読み込み中…」にする。失敗しても直前の表示を残す。
 - エラー通知はヘッダのすぐ下に画面幅の帯を置き、その分だけ下の欄を押し下げる。赤い地・太い左線・「エラー」の見出しと太字で示し、`role="alert"` と「閉じる」を付ける。発生元を部屋一覧の再取得・部屋の詳細（ファイル一覧など）・確認事項の取得・プレビューの取得に分け、発生元ごとに保持する。部屋の詳細と確認事項を並行して取得し、両方が失敗した場合もすべて通知に登録する。閉じるか、ユーザーの操作で同じ処理をやり直して成功したときだけ、その発生元の通知を消す。条件の入力を始めただけの場合、無関係な処理の成功、タブ復帰時の静かな再取得の成功では消さない。エラー以外の通知も同じ帯を使い、一段沈んだ地で示す。
@@ -284,7 +301,7 @@ room は部分一致を使わない。URL を `/` で区切ってから各要素
 | HTML | `text/html`。sandbox で scripts・forms・modals・popups を許可し、frame-ancestors はハブだけ。CDN 等の取得先は制限しない |
 | Markdown・HTML・SVG の `?raw=1`、2 MiB超の Markdown | `text/plain; charset=utf-8`、CSP はちょうど `sandbox`。リンク化せず元の内容を返す。他の種類では `?raw=1` を無視する |
 | SVG・画像・テキスト | 対応する image 型または `text/plain; charset=utf-8`、CSP は sandbox |
-| PDF | `application/pdf` と nosniff。暫定の案Aとして CSP・iframe に sandbox を付けず、frame-ancestors はハブだけ。ブラウザでの確定は PR4 |
+| PDF | `application/pdf` と nosniff。CSP・iframe に sandbox を付けず、frame-ancestors はハブだけ。PR4c で Chrome の欄内表示と「ファイルだけを開く」の別タブ表示を確かめ、案Aで確定 |
 | その他 | `application/octet-stream` と attachment、CSP は sandbox |
 
 sandbox は応答ヘッダにも付けるので、「別タブで開く」でも効く。`allow-same-origin` は付けない。部屋のファイルには CORP を付けず、不透明なオリジンの Markdown や HTML から画像を表示できるようにする。
@@ -298,7 +315,7 @@ CommonMark 由来の制限として、URL の末尾が `_`・`)` などの句読
 md.css は sandbox からの CORP 制限を避けるため文書内の style に埋め込み、SHA-256 を CSP に入れる。
 
 HTTP はローカル専用で必要な機能が少ないため、標準ライブラリで実装し依存を増やさない。Markdown は pulldown-cmark（default-features を無効、html だけ）を使い、サーバ側の無害化を Rust の単体テストで固定する。同梱 JavaScript ライブラリの更新やライセンス管理も不要になる。
-PR3a で回答の API と検査、PR3b で画面の整理と確認事項・ファイルの左右の欄、PR3c でフォーム・下書き・送信・貼り付け用の文を実装した。OS で開く API とボタンは PR4。
+PR3a で回答の API と検査、PR3b で画面の整理と確認事項・ファイルの左右の欄、PR3c でフォーム・下書き・送信・貼り付け用の文を実装した。PR4c1 で `POST /api/open` と、既定のアプリ・ファイルのあるフォルダ・部屋のフォルダを開くボタンを追加し、PDF は案Aで確定した。
 
 ## TUI ピッカー（try-rs を参考に）
 

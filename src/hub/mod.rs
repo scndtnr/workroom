@@ -1,4 +1,4 @@
-//! 成果物を読み、確認事項への回答だけを追記するローカル成果物ハブ。
+//! 成果物の閲覧・OS での表示と、確認事項への回答を扱うローカル成果物ハブ。
 
 mod http;
 mod listing;
@@ -30,6 +30,8 @@ pub struct Options {
     pub no_open: bool,
 }
 
+type Opener = dyn Fn(&OsStr) -> Result<()> + Send + Sync;
+
 pub struct State {
     pub settings: Settings,
     pub port: u16,
@@ -37,6 +39,9 @@ pub struct State {
     pub token: String,
     pub initial: listing::Filter,
     pub cache: Mutex<listing::Cache>,
+    pub opener: Box<Opener>,
+    #[cfg(test)]
+    opened_paths: Arc<Mutex<Vec<std::ffi::OsString>>>,
 }
 
 fn new_token() -> String {
@@ -102,8 +107,17 @@ pub fn run(settings: Settings, options: Options) -> Result<()> {
         options.old,
         options.days.unwrap_or(settings.config.recent_days),
     );
-    let state =
-        Arc::new(State { settings, port, root_hash: hash, token: new_token(), initial, cache: Mutex::default() });
+    let state = Arc::new(State {
+        settings,
+        port,
+        root_hash: hash,
+        token: new_token(),
+        initial,
+        cache: Mutex::default(),
+        opener: Box::new(shell::open_path_with_os),
+        #[cfg(test)]
+        opened_paths: Arc::default(),
+    });
     announce(port, options.no_open)?;
     eprintln!("成果物ハブを起動しました。Ctrl+C で終了します");
     serve(listener, state)
@@ -193,6 +207,8 @@ fn serve(listener: TcpListener, state: Arc<State>) -> Result<()> {
 
 #[cfg(test)]
 fn test_state(root: &std::path::Path) -> State {
+    let opened_paths = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&opened_paths);
     State {
         settings: Settings {
             config: crate::config::Config::default(),
@@ -206,6 +222,11 @@ fn test_state(root: &std::path::Path) -> State {
         token: new_token(),
         initial: listing::Filter::from_cli(None, true, false, 14),
         cache: Mutex::default(),
+        opener: Box::new(move |path| {
+            recorded.lock().unwrap().push(path.to_owned());
+            Ok(())
+        }),
+        opened_paths,
     }
 }
 
