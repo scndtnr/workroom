@@ -97,6 +97,9 @@ enum Cmd {
     },
     /// 部屋の確認事項を起票・確認・解決・取り下げする
     Q(QArgs),
+    /// エージェント向けのスキル（SKILL.md）を標準出力に出す
+    #[command(after_help = "保存の例は README の「エージェント向けのスキル」を参照。")]
+    Skill,
     /// シェル連携のラッパー関数を出力する
     Init {
         /// シェルの種類
@@ -128,6 +131,15 @@ enum RulesCmd {
 }
 
 #[derive(Args)]
+#[command(after_help = "\
+流れ:
+  1. エージェントが workroom q ask で質問を起票し、ID をユーザーに伝える
+  2. ユーザーが成果物ハブ（workroom hub）で回答する
+  3. エージェントが workroom q pending で回答を読み、README などに反映する
+  4. pending の出力に示された workroom q done … を、そのまま実行する
+
+各コマンドの書き方と注意は workroom q <コマンド> --help。
+エージェント向けのスキル（SKILL.md）は workroom skill で出力できる（保存の例は README を参照）。")]
 struct QArgs {
     /// 部屋の名前（部分一致。省略するとカレントの部屋）
     #[arg(long, global = true, value_name = "名前")]
@@ -139,6 +151,19 @@ struct QArgs {
 #[derive(Subcommand)]
 enum QCmd {
     /// ユーザーへの質問を起票し、ID を出力する
+    #[command(after_help = r##"書き方:
+  - 質問は1〜3行の要点にし、詳細・経緯は --background に書く
+  - --by には役割の分かる名前を付ける（例: --by '調査担当（Codex）'）
+  - URL と他の文字の間には半角スペースを入れる
+  - ファイルパスはバッククォートで囲む（例: `docs/plan.md`）。ハブでリンクになる
+
+改行の渡し方（PowerShell・bash・nushell 共通）:
+  単引用符の中で実際に改行する。バッククォート・$・\ もそのまま渡る。
+    workroom q ask '1行目
+    2行目は `docs/plan.md` を参照' --by '調査担当'
+  \n の2文字は改行にならない（バッククォートの外にあれば警告を出す）。
+  二重引用符は使わない（PowerShell ではバッククォート、bash ではバッククォートと $、nushell では \ が特別な意味になる）。
+  文に ' を入れるとき: PowerShell は '' と重ねるか @'…'@、bash は "$(cat <<'EOF' … EOF)"、nushell は r#'…'#"##)]
     Ask {
         /// 質問（1000文字以内。改行可。詳細は --background に）
         question: String,
@@ -159,12 +184,24 @@ enum QCmd {
         by: Option<String>,
     },
     /// 反映が要る回答と、未回答の件数・ID を表示する
+    #[command(after_help = "\
+実行する場面:
+  - 作業を始めるとき
+  - ユーザーが回答したと言ったとき
+  - ハブの貼り付け用の文を受け取ったとき
+回答を反映したら、出力に示された workroom q done … を、そのまま実行する。")]
     Pending {
         /// JSON で出力する
         #[arg(long)]
         json: bool,
     },
     /// 回答を反映した場所と、解決を記録する
+    #[command(after_help = "\
+注意:
+  - pending の出力に示された行を、そのまま実行する。--upto の番号は変えない（pending の後に届いた回答を、読まずに反映済みにしないため）
+  - --to には反映した場所を書き、パスはバッククォートで囲む（例: --to '`README.md` の「方針」'）
+  - 会話で回答を受けたときは --chat '<要旨>' を付ける
+  - 回答不要と答えられた質問は --to を省ける")]
     Done {
         /// 質問の ID
         id: String,
@@ -182,6 +219,10 @@ enum QCmd {
         by: Option<String>,
     },
     /// 無効になった質問を取り下げる
+    #[command(after_help = "\
+聞き直すときの順番:
+  1. workroom q ask '<直した質問>' --origin <旧ID>（新しい ID が出る）
+  2. workroom q withdraw <旧ID> --reason '<理由>' --successor <新ID>")]
     Withdraw {
         /// 質問の ID
         id: String,
@@ -196,6 +237,10 @@ enum QCmd {
         by: Option<String>,
     },
     /// 質問・回答の一覧を表示する
+    #[command(after_help = "\
+pending との違い:
+  pending は反映が要る回答だけを出し、解決の実行例を付ける。
+  show は未回答・未反映の質問・背景・選択肢・回答をすべて出す（--all で解決済み・取り下げも）。どちらも記録は変えない。")]
     Show {
         /// 解決済み・取り下げを含めて表示する
         #[arg(long)]
@@ -341,6 +386,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
         print!("{}", shell::init_script(*shell, cmd));
         return Ok(ExitCode::SUCCESS);
     }
+    // skill も設定を読まず、埋め込んだ本文だけを出す。
+    if let Cmd::Skill = &command {
+        print!("{}", include_str!("../skills/workroom/SKILL.md"));
+        return Ok(ExitCode::SUCCESS);
+    }
     // q は設定が読めない環境でも、部屋の中から実行できる。
     if let Cmd::Q(args) = command {
         run_q(args)?;
@@ -430,7 +480,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 println!("{}", r.label());
             }
         }
-        Cmd::Init { .. } => unreachable!(),
+        Cmd::Init { .. } | Cmd::Skill => unreachable!(),
         Cmd::Q(_) => unreachable!(),
     }
     Ok(ExitCode::SUCCESS)
@@ -438,6 +488,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
 
 fn q_by(by: Option<String>) -> Option<String> {
     by.or_else(|| std::env::var_os("CLAUDECODE").map(|_| "Claude Code".into()))
+}
+
+/// バッククォートで区切った偶数番目の区間（コードの外）だけを検査する。
+fn has_literal_newline_escape(text: &str) -> bool {
+    text.split('`').step_by(2).any(|part| part.contains(r"\n"))
 }
 
 fn run_q(args: QArgs) -> Result<()> {
@@ -454,11 +509,18 @@ fn run_q(args: QArgs) -> Result<()> {
         if args.room.is_some() { format!(" --room {}", q_shell_quote(&room.label())) } else { String::new() };
     let warnings = match args.command {
         QCmd::Ask { question, background, choices, recommend, origin, by } => {
+            let literal_newline_escape =
+                has_literal_newline_escape(&question) || background.as_deref().is_some_and(has_literal_newline_escape);
             let date = settings.as_ref().map(room::today).unwrap_or_else(|_| chrono::Local::now().date_naive());
             let ask = questions::Ask { question, background, choices, recommend, origin };
             let ((id, unanswered), warnings) = questions::ask(&room.path, date, ask, q_by(by))?;
             println!("{id}");
             eprintln!("起票しました: {id}（未回答 {unanswered} 件）");
+            if literal_newline_escape {
+                eprintln!(
+                    r"警告: 質問か背景に \n の2文字があります。改行にはなりません（改行の渡し方は workroom q ask --help）。パスなどで意図したものなら無視してよい"
+                );
+            }
             warnings
         }
         QCmd::Done { id, upto, to, chat, by } => {
@@ -544,7 +606,7 @@ fn run_q(args: QArgs) -> Result<()> {
                         let (action, to) = if not_needed {
                             ("確認したら", "")
                         } else {
-                            ("反映したら", " --to \"<反映先>\"")
+                            ("反映したら", " --to '<反映先>'")
                         };
                         if q.ask.is_some() {
                             println!(
@@ -789,6 +851,82 @@ fn show_config(settings: &Settings, init: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const SKILL: &str = include_str!("../skills/workroom/SKILL.md");
+
+    #[test]
+    fn literal_newline_escape_is_detected_only_outside_backticks() {
+        for (text, expected) in [
+            ("", false),
+            ("1行目\n2行目\r\n3行目", false),
+            (r"1行目\n2行目", true),
+            (r"C:\new\notes", true),
+            (r"`C:\new\notes` を参照", false),
+            (r"`C:\new\notes` と `docs/plan.md`", false),
+            (r"`docs/plan.md` の外に\n", true),
+            (r"外に\nと `C:\new\notes`", true),
+            (r"`中に\n` 外に\n `中にも\n`", true),
+            (r"閉じていない `C:\new\notes", false),
+            (r"`` の後に\n", true),
+            (r"\N と \t", false),
+        ] {
+            assert_eq!(has_literal_newline_escape(text), expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn skill_frontmatter_and_line_endings_meet_format_limits() {
+        assert!(!SKILL.contains('\r'));
+        assert!(!SKILL.starts_with('\u{feff}'));
+        let (frontmatter, _) = SKILL.strip_prefix("---\n").unwrap().split_once("\n---\n").unwrap();
+        let fields: BTreeMap<_, _> = frontmatter.lines().map(|line| line.split_once(": ").unwrap()).collect();
+        assert_eq!(fields["name"], Path::new("skills/workroom").file_name().unwrap().to_str().unwrap());
+        assert!((1..=1024).contains(&fields["description"].chars().count()));
+        assert!((1..=500).contains(&fields["compatibility"].chars().count()));
+    }
+
+    #[test]
+    fn skill_commands_and_flags_exist_in_localized_cli() {
+        let mut cli = localize(Cli::command());
+        // --room などのグローバル引数を各サブコマンドに伝える。
+        cli.build();
+        let q = cli.find_subcommand("q").unwrap();
+        let q_command = regex::Regex::new(r"\bworkroom q ([a-z]+)\b").unwrap();
+        let top_command = regex::Regex::new(r"\bworkroom ([a-z]+)\b").unwrap();
+        let flag = regex::Regex::new(r"--([a-z][a-z-]*)\b").unwrap();
+        let has_flag = |command: &Command, name: &str| command.get_arguments().any(|arg| arg.get_long() == Some(name));
+        let mut found_q_commands = BTreeSet::new();
+        let mut found_flags = 0;
+        for line in SKILL.lines() {
+            let commands: Vec<_> = q_command
+                .captures_iter(line)
+                .map(|capture| {
+                    let name = capture.get(1).unwrap().as_str();
+                    found_q_commands.insert(name);
+                    q.find_subcommand(name).unwrap_or_else(|| panic!("スキルの q {name} が実在しない: {line}"))
+                })
+                .collect();
+            for capture in top_command.captures_iter(line) {
+                let name = capture.get(1).unwrap().as_str();
+                if name != "q" {
+                    assert!(cli.find_subcommand(name).is_some(), "スキルの {name} が実在しない: {line}");
+                }
+            }
+            for capture in flag.captures_iter(line) {
+                found_flags += 1;
+                let name = capture.get(1).unwrap().as_str();
+                let exists = if commands.is_empty() {
+                    has_flag(&cli, name) || q.get_subcommands().any(|command| has_flag(command, name))
+                } else {
+                    commands.iter().any(|command| has_flag(command, name))
+                };
+                assert!(exists, "スキルの --{name} がこの行のコマンドに実在しない: {line}");
+            }
+        }
+        assert_eq!(found_q_commands, BTreeSet::from(["ask", "pending", "done", "withdraw", "show"]));
+        assert!(found_flags >= 8, "スキルから拾ったフラグが少なすぎる: {found_flags}");
+    }
 
     #[test]
     fn picker_outcomes_keep_creation_date_project_and_agent_command() {

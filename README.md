@@ -100,6 +100,7 @@ wk
 | `workroom q done <ID> [--upto n] [--to 反映先] [--chat 要旨] [--by 名前]` | 回答を反映して解決を記録する。会話で受けた回答は `--chat` で記録 |
 | `workroom q withdraw <ID> --reason 理由 [--successor ID] [--by 名前]` | 無効になった質問を取り下げる |
 | `workroom q show [--all] [--json]` | 質問と回答を表示する。`--all` で解決済み・取り下げも含める |
+| `workroom skill` | エージェント向けのスキル（SKILL.md）を標準出力に出す |
 | `workroom init <pwsh\|nu\|bash\|zsh> [--cmd 名前]` | シェル連携のスクリプトを出力 |
 | `workroom config [--init]` | 設定の場所と内容を表示。`--init` で雛形を作成 |
 | `workroom --help` / `workroom --version` | ヘルプ / バージョンを表示 |
@@ -110,7 +111,7 @@ wk
 `workroom q` は部屋の中（サブディレクトリも可）から実行する。各サブコマンドに `--room <名前>` を付ければ、部屋の外から部分一致で指定できる。
 質問の記録は部屋の直下の `QUESTIONS.jsonl` に追記する。`QUESTIONS.jsonl`・`ANSWERS.jsonl` は手で編集しない。
 質問は改行を含めて1000文字以内。CRLF・CR は LF にそろえて前後の空白を除く。引数には実際の改行を入れ、`\n` の2文字はそのまま扱う。`q show`・`q pending` の質問は1行目を見出しに、2行目以降を2文字字下げして表示する。
-この段階では回答は会話で受け、反映後に `workroom q done <ID> --chat "回答の要旨" --to "README などの反映先"` を実行する。
+この段階では回答は会話で受け、反映後に `workroom q done <ID> --chat '回答の要旨' --to 'README などの反映先'` を実行する。
 `pending` に回答が出たら、表示された `done --upto …` の行をそのまま使う。終了コードは成功 0、実行時エラー 1、引数の誤り 2。
 
 サブコマンド名と一致しない語は TUI の検索語になる。同じ語を検索したい場合は `wk -- done`。PowerShell では `--` を引用し、`wk '--' done` と書く。
@@ -210,6 +211,40 @@ wk rules sync
 
 先頭行の SHA-256 と本文が一致する、生成後に手で変更されていないものだけを更新する。AGENTS.md がない部屋には作り、手で変更されたものは一覧に出して残す。
 `rules sync` はテンプレートを自動作成せず、なければエラーになる。作業ルート直下に AGENTS.md がある場合は `_workroom/AGENTS.md` に移して使う。親と部屋の両方を Claude Code が読むのを避けるため。
+
+## エージェント向けのスキル
+
+エージェントに確認事項の使い方（質問の書き方、改行の渡し方、回答の反映の流れ）を教えるスキルを、`workroom skill` で出力できる。
+出力は、実行ファイルに埋め込んだ [skills/workroom/SKILL.md](skills/workroom/SKILL.md) と同じ。workroom を更新したら、保存し直す。
+
+Claude Code は `~/.claude/skills/workroom/SKILL.md`、Codex は `~/.agents/skills/workroom/SKILL.md` に置く。
+
+PowerShell（日本語版 Windows の既定の shift_jis では文字が化けるため、先に出力の文字コードを UTF-8 にする）:
+
+```powershell
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+New-Item -ItemType Directory -Force "$HOME\.claude\skills\workroom" | Out-Null
+workroom skill > "$HOME\.claude\skills\workroom\SKILL.md"
+```
+
+bash / zsh:
+
+```sh
+mkdir -p ~/.claude/skills/workroom && workroom skill > ~/.claude/skills/workroom/SKILL.md
+```
+
+nushell:
+
+```nu
+mkdir ~/.claude/skills/workroom; workroom skill | save -f ~/.claude/skills/workroom/SKILL.md
+```
+
+Codex 向けには、上の例の `.claude` を `.agents` に変える。
+
+スキルがなくても、部屋の AGENTS.md に必須の手順があり、`workroom q --help` で書き方を確かめられる。
+
+0.2.0 で、内蔵のテンプレートの「確認事項」の節を直した（質問は1〜3行の要点と `--background`、単引用符での改行、URL とパスの書き方、スキルへの案内）。
+すでに `<root>/_workroom/AGENTS.md` を使っている場合、この変更は自動では入らない。[templates/AGENTS.md](templates/AGENTS.md) と見比べて直し、`workroom rules sync` で各部屋に反映する。
 
 ## 注意事項
 
