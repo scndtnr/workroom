@@ -251,6 +251,7 @@ fn fixture(env: &Env) -> PathBuf {
 fn lists_states_questions_and_files_without_any_disk_writes() {
     let env = Env::new();
     let room = fixture(&env);
+    fs::write(room.join("a.md"), "直下の成果物").unwrap();
     let done = env.root.join("2026-11-02-done");
     fs::create_dir(&done).unwrap();
     fs::write(done.join(".done"), "").unwrap();
@@ -277,9 +278,36 @@ fn lists_states_questions_and_files_without_any_disk_writes() {
     assert_eq!(items[3]["withdrawals"][0]["reason"], "前提の変更");
     assert_eq!(questions["legacy"][0], "QUESTIONS.md");
     assert_eq!(questions["warnings"].as_array().unwrap().len(), 1);
+    assert!(questions.get("date").is_none());
+    assert!(questions.get("title").is_none());
     let files = hub.json(&format!("/api/files{query}"));
-    assert!(files["main"]["items"].as_array().unwrap().iter().any(|item| item["path"] == "outputs/report.html"));
-    assert_eq!(hub.json("/api/questions/all")["rooms"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        files["main"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["path"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "a.md",
+            "QUESTIONS.md",
+            "docs",
+            "docs/a.md",
+            "docs/image.svg",
+            "docs/report.MD.TXT",
+            "outputs",
+            "outputs/report.html"
+        ]
+    );
+    let all = hub.json("/api/questions/all");
+    let groups = all["rooms"].as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+    let project = groups.iter().find(|g| g["room"] == "EXAMPLE/2026-11-03-調査").unwrap();
+    assert_eq!(project["date"], "26-11-03");
+    assert_eq!(project["title"], "EXAMPLE/調査");
+    let plain = groups.iter().find(|g| g["room"] == "2026-11-02-done").unwrap();
+    assert_eq!(plain["date"], "26-11-02");
+    assert_eq!(plain["title"], "done");
     let prefix = format!("/f/EXAMPLE/{}/", encode("2026-11-03-調査"));
     for target in ["/", "/assets/app.js", "/assets/app.css", "/api/hello"] {
         assert_eq!(hub.get(target).status, 200);

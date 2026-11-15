@@ -425,6 +425,8 @@ fn get(state: &State, target: &str) -> Result<Response, u16> {
                     let label = room["room"].as_str()?;
                     let path = paths::room_path(&state.settings.root, label).ok()?;
                     let mut group = listing::questions(state, label, &path);
+                    group["date"] = room["date"].clone();
+                    group["title"] = room["title"].clone();
                     if room["outside"] == true {
                         group["outside"] = json!(true);
                     }

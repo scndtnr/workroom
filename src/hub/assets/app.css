@@ -6,6 +6,7 @@
   --done: #2f6f45; --done-bg: #e2f2e7; --gone: #5f6b7d; --gone-bg: #eceff3;
   --draft: #6a43bd; --draft-bg: #efe9fb; --error: #b42318; --error-bg: #fde8e6;
   --code-bg: color-mix(in srgb, var(--fg) 5%, transparent);
+  --folder: #a37a00; --folder-bg: #fff1b8;
 }
 @media (prefers-color-scheme: dark) {
   :root:not(.light) {
@@ -16,6 +17,7 @@
     --done: #8fd3a5; --done-bg: #1a3324; --gone: #a5aebd; --gone-bg: #29303b;
     --draft: #c7adff; --draft-bg: #2f2548; --error: #ff9d92; --error-bg: #431f1c;
     --code-bg: color-mix(in srgb, var(--fg) 12%, transparent);
+    --folder: #e8c34a; --folder-bg: #3d3412;
   }
 }
 :root.dark {
@@ -26,6 +28,7 @@
   --done: #8fd3a5; --done-bg: #1a3324; --gone: #a5aebd; --gone-bg: #29303b;
   --draft: #c7adff; --draft-bg: #2f2548; --error: #ff9d92; --error-bg: #431f1c;
   --code-bg: color-mix(in srgb, var(--fg) 12%, transparent);
+  --folder: #e8c34a; --folder-bg: #3d3412;
 }
 :root.light { color-scheme: light; }
 * { box-sizing: border-box; }
@@ -121,11 +124,25 @@ p { margin: 4px 0; }
 .file-browser h2 { font-size: 12px; margin: 0 0 4px; color: var(--muted); }
 .file-browser details { margin-top: 6px; }
 .file-browser summary { font-size: 12px; }
+.file-group-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 4px; }
+.file-group-heading h2 { margin: 0; }
+.file-tree-actions { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0; }
+.file-group-heading .file-tree-actions { margin: 0 0 0 auto; }
+.file-tree-actions button { font-size: 10px; padding: 2px 3px; }
 .files { list-style: none; margin: 0; padding: 0; }
+.files .files { padding-left: 16px; }
 .files li { padding: 2px 0; overflow-wrap: anywhere; }
+.file-row { display: flex; align-items: baseline; min-width: 0; }
+.file-disclosure { flex: 0 0 10px; width: 10px; font-size: 12px; color: var(--muted); text-align: center; }
+/* ファイル名の始まりを、同じ深さのフォルダ名（三角・間・印・間の後）にそろえる。 */
+.file-row .file-disclosure { flex-basis: 32px; width: 32px; }
 .file { max-width: 100%; border: 0; padding: 2px 3px; text-align: left; font-size: 12px; }
-.file-size { font-size: 11px; color: var(--muted); }
-.directory { font-weight: 600; color: var(--muted); }
+.file-row .file { min-width: 0; overflow-wrap: anywhere; }
+.file-size { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+.folder-toggle { display: flex; align-items: baseline; gap: 4px; max-width: 100%; border: 0; padding: 2px 3px; font-size: 12px; text-align: left; color: inherit; }
+.folder-name { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.folder-icon { flex: 0 0 14px; align-self: center; color: var(--folder); }
+.folder-icon path { fill: var(--folder-bg); }
 .preview { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; }
 .preview-header { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; padding-bottom: 4px; }
 .preview-header > button { flex: 0 0 auto; white-space: nowrap; }
