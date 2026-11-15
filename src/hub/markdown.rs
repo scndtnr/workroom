@@ -363,17 +363,18 @@ mod tests {
     #[test]
     fn plain_urls_match_ba1e77e_html_snapshots() {
         // git show ba1e77e:src/hub/markdown.rs を target/ 下の一時プロジェクトで実行して生成。
-        // render() の出力全体を比較し、共通の HTML と CSS は1回だけ保存している。
+        // 保存しているのは ba1e77e の render() の <main> の中身だけ。共通の HTML と CSS は持たず、
+        // 現在の render() の出力から <main> の中身を取り出して比べる（md.css を変えても壊れない）。
         let snapshot: serde_json::Value =
             serde_json::from_str(include_str!("../../tests/fixtures/markdown_plain_urls.json")).unwrap();
-        let prefix = snapshot["prefix"].as_str().unwrap();
-        let suffix = snapshot["suffix"].as_str().unwrap();
         let cases = snapshot["cases"].as_array().unwrap();
         assert_eq!(cases.len(), 87);
         for case in cases {
             let input = case["input"].as_str().unwrap();
-            let expected = format!("{prefix}{}{suffix}", case["body"].as_str().unwrap());
-            assert_eq!(render(input.as_bytes(), None, None, None), expected, "入力: {input:?}");
+            let output = render(input.as_bytes(), None, None, None);
+            assert!(output.ends_with("</main></body></html>"), "入力: {input:?}");
+            let body = output.split_once("<main>").unwrap().1.rsplit_once("</main>").unwrap().0;
+            assert_eq!(body, case["body"].as_str().unwrap(), "入力: {input:?}");
         }
     }
 
