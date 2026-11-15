@@ -136,6 +136,9 @@ iframe { display: block; width: 100%; height: 100%; min-height: 0; border: 1px s
 .preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
 details .preview { height: 60vh; }
 pre { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.6 ui-monospace, monospace; }
+code { font-family: ui-monospace, monospace; }
+/* カードの本文のバッククォートの組。地は文字色を薄く重ね、色相を増やさない。 */
+.inline-code { font-size: 0.92em; padding: 0 0.25em; border-radius: 3px; background: color-mix(in srgb, var(--fg) 12%, transparent); overflow-wrap: anywhere; }
 .font-ud pre, .font-ud code { font-family: "BIZ UDGothic", "BIZ UDゴシック", ui-monospace, monospace; }
 .question { border: 1px solid var(--line); border-radius: 6px; margin: 8px 3px; background: var(--panel); break-inside: avoid; }
 .question button, .question a { max-width: 100%; overflow-wrap: anywhere; text-align: left; }
@@ -149,7 +152,8 @@ pre { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/
 .question-id:hover { text-decoration: underline; }
 .question-meta { margin-left: auto; font-size: 12px; color: var(--muted); }
 .question-body { padding: 6px 10px 10px; }
-.question.selected-question { outline: 2px solid var(--ink); outline-offset: 1px; }
+/* 枠の外に離した outline は角の丸みと合わずにずれて見えるため、カードの枠そのものを太くする。 */
+.question.selected-question { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
 .question.withdrawn { color: var(--muted); }
 .question-text { white-space: pre-wrap; font-size: 15px; font-weight: 600; line-height: 1.7; margin: 6px 0 0; overflow-wrap: anywhere; }
 .question-text .rest { font-weight: 400; }

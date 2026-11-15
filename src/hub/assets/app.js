@@ -297,17 +297,44 @@
     });
     return link;
   }
-  function appendLinkedText(parent, text, context) {
-    let offset = 0;
-    const ranges = context ? findLinkRanges(text, { root: config.root, windows: config.shell === "powershell" }) : findUrlRanges(text);
+  // カードの本文でインラインコードとして見せる、同じ行の中の、空白だけでないバッククォートの組。
+  // 組の作り方は findPathRanges と同じにする（空の組も消費して、隣の組との対応をそろえる）。
+  function findCodeSpans(text) {
+    const spans = [];
+    const backticks = /`([^`\r\n]*)`/g;
+    for (let match; (match = backticks.exec(text)) !== null;) {
+      if (match[1].trim()) spans.push({ start: match.index, end: backticks.lastIndex });
+    }
+    return spans;
+  }
+  function appendRanges(parent, text, from, to, ranges, context) {
+    let offset = from;
     for (const range of ranges) {
       const { start, end } = range;
-      parent.append(document.createTextNode(text.slice(offset, start)));
+      if (start < from || end > to) continue;
+      if (start > offset) parent.append(document.createTextNode(text.slice(offset, start)));
       const label = text.slice(start, end);
       parent.append(range.kind === "path" ? pathLink(label, range, context) : separateTab(label, label));
       offset = end;
     }
-    parent.append(document.createTextNode(text.slice(offset)));
+    if (to > offset) parent.append(document.createTextNode(text.slice(offset, to)));
+  }
+  function appendLinkedText(parent, text, context) {
+    const ranges = context ? findLinkRanges(text, { root: config.root, windows: config.shell === "powershell" }) : findUrlRanges(text);
+    if (!context?.code) {
+      appendRanges(parent, text, 0, text.length, ranges, context);
+      return;
+    }
+    // URL・パスの範囲は組の境界をまたがない（URL はバッククォートで止まり、素のパスは組の外だけで探す）。
+    let offset = 0;
+    for (const span of findCodeSpans(text)) {
+      appendRanges(parent, text, offset, span.start, ranges, context);
+      const code = element("code", undefined, "inline-code");
+      appendRanges(code, text, span.start + 1, span.end - 1, ranges, context);
+      parent.append(code);
+      offset = span.end;
+    }
+    appendRanges(parent, text, offset, text.length, ranges, context);
   }
   function linkedElement(tag, text, className, context) {
     const node = element(tag, undefined, className);
@@ -891,7 +918,7 @@
     const info = ask(question);
     (info.choices || []).forEach((choice, index) => {
       const line = element("li");
-      const text = linkedElement("span", choice, "choice-text", { room, questionId: question.id });
+      const text = linkedElement("span", choice, "choice-text", { room, questionId: question.id, code: true });
       if (info.recommend === index + 1) text.append(document.createTextNode(" "), chip("推奨", "recommend"));
       line.append(text);
       choices.append(line);
@@ -993,7 +1020,7 @@
     return badge;
   }
   function questionCard(question, room, params, showRoom = false, outside = false) {
-    const context = { room, questionId: question.id };
+    const context = { room, questionId: question.id, code: true };
     const color = stateColors[question.state] || "gone";
     const card = element("section", undefined, "question " + color);
     card.dataset.questionId = question.id;
