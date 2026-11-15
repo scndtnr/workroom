@@ -189,11 +189,13 @@ fn escape_url_markers(source: &str, options: Options) -> String {
         match event {
             Event::Text(_) => text_ranges.push(range),
             // Start のオフセットは、対応する End までのソース全体を含む。
+            // 脚注の参照は本文にならないので、URL の範囲の境界にする。
             Event::Start(Tag::CodeBlock(_) | Tag::Link { .. } | Tag::Image { .. } | Tag::HtmlBlock)
             | Event::Code(_)
             | Event::Html(_)
             | Event::InlineHtml(_)
-            | Event::HardBreak => excluded.push(range),
+            | Event::HardBreak
+            | Event::FootnoteReference(_) => excluded.push(range),
             Event::Start(tag @ (Tag::Strong | Tag::Emphasis | Tag::Strikethrough)) => {
                 let marker = source.as_bytes()[range.end - 1];
                 let mut closing = range.end;
@@ -258,12 +260,15 @@ fn linked_text(text: &str) -> Option<String> {
     Some(output)
 }
 
+fn markdown_options() -> Options {
+    Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_FOOTNOTES
+}
+
 pub fn render(bytes: &[u8], theme: Option<&str>, hub_url: Option<&str>) -> String {
     let style = style_text();
     let text = String::from_utf8_lossy(bytes);
     let invalid_utf8 = std::str::from_utf8(bytes).is_err();
-    let options =
-        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_FOOTNOTES;
+    let options = markdown_options();
     let source = escape_url_markers(text.trim_start_matches('\u{feff}'), options);
     let mut links = Vec::new();
     let mut images = Vec::new();
@@ -449,7 +454,7 @@ mod tests {
     #[test]
     fn symbol_urls_preserve_original_emphasis_structure_outside_the_url() {
         fn outside_emphasis(source: &str, url: &Range<usize>, positions: &[usize]) -> Vec<(TagEnd, bool, usize)> {
-            Parser::new_ext(source, Options::ENABLE_STRIKETHROUGH)
+            Parser::new_ext(source, markdown_options())
                 .into_offset_iter()
                 .filter_map(|(event, range)| {
                     let (kind, opening, position) = match event {
@@ -476,7 +481,7 @@ mod tests {
             ("*https://example.com/a*b*c*。", "https://example.com/a*b*c"),
             ("*see https://example.com/a*b*c*", "https://example.com/a*b*c"),
         ] {
-            let source = escape_url_markers(input, Options::ENABLE_STRIKETHROUGH);
+            let source = escape_url_markers(input, markdown_options());
             // 追加したバックスラッシュを除いた元ソース上の位置で、開き・閉じを比較する。
             let mut positions = vec![0];
             let mut original = 0;
@@ -522,6 +527,72 @@ mod tests {
         }
         let output = render("**x_**を参照".as_bytes(), None, None);
         assert!(output.contains("<p>**x_**を参照</p>"));
+    }
+
+    fn main_html(input: &str) -> String {
+        let output = render(input.as_bytes(), None, None);
+        let body = output.split_once("<main>").unwrap().1.rsplit_once("</main>").unwrap().0;
+        body.replace(" target=\"_blank\" rel=\"noopener noreferrer\"", "")
+    }
+
+    #[test]
+    fn footnote_references_right_after_urls_match_ba1e77e_html() {
+        // 期待値は ba1e77e の render() の <main> の中身（素の URL のリンクの target と rel は省く）。
+        for (input, expected) in [
+            (
+                "https://example.com/x[^a_b]\n\n[^a_b]: 注",
+                "<p><a href=\"https://example.com/x\">https://example.com/x</a><sup class=\"footnote-reference\"><a href=\"#a_b\">1</a></sup></p>\n<div class=\"footnote-definition\" id=\"a_b\"><sup class=\"footnote-definition-label\">1</sup>\n<p>注</p>\n</div>\n",
+            ),
+            (
+                "本文https://example.com/[^note_1]\n\n[^note_1]: 注",
+                "<p>本文<a href=\"https://example.com/\">https://example.com/</a><sup class=\"footnote-reference\"><a href=\"#note_1\">1</a></sup></p>\n<div class=\"footnote-definition\" id=\"note_1\"><sup class=\"footnote-definition-label\">1</sup>\n<p>注</p>\n</div>\n",
+            ),
+            (
+                "https://example.com/x[^*n*]\n\n[^*n*]: 注",
+                "<p><a href=\"https://example.com/x\">https://example.com/x</a><sup class=\"footnote-reference\"><a href=\"#*n*\">1</a></sup></p>\n<div class=\"footnote-definition\" id=\"*n*\"><sup class=\"footnote-definition-label\">1</sup>\n<p>注</p>\n</div>\n",
+            ),
+            (
+                "https://example.com/[^1]_x_\n\n[^1]: n",
+                "<p><a href=\"https://example.com/\">https://example.com/</a><sup class=\"footnote-reference\"><a href=\"#1\">1</a></sup><em>x</em></p>\n<div class=\"footnote-definition\" id=\"1\"><sup class=\"footnote-definition-label\">1</sup>\n<p>n</p>\n</div>\n",
+            ),
+        ] {
+            assert_eq!(main_html(input), expected, "入力: {input:?}");
+        }
+    }
+
+    #[test]
+    fn emphasis_opened_inside_a_url_and_closed_outside_stays_text() {
+        // URL の範囲を優先し、URL の中の開きと外の閉じは強調にしない（docs/design.md の制限の節）。
+        for (input, expected) in [
+            (
+                "https://example.com/**重要**",
+                "<p><a href=\"https://example.com/**\">https://example.com/**</a>重要**</p>\n",
+            ),
+            (
+                "詳細はhttps://example.com/**必ず確認**",
+                "<p>詳細は<a href=\"https://example.com/**\">https://example.com/**</a>必ず確認**</p>\n",
+            ),
+            ("https://example.com/*強調*", "<p><a href=\"https://example.com/*\">https://example.com/*</a>強調*</p>\n"),
+            (
+                "https://example.com/~~旧~~",
+                "<p><a href=\"https://example.com/~~\">https://example.com/~~</a>旧~~</p>\n",
+            ),
+            // 避け方：URL の後に空白か読点を入れる、または <URL> と書く。
+            (
+                "https://example.com/ **重要**",
+                "<p><a href=\"https://example.com/\">https://example.com/</a> <strong>重要</strong></p>\n",
+            ),
+            (
+                "https://example.com/、**重要**",
+                "<p><a href=\"https://example.com/\">https://example.com/</a>、<strong>重要</strong></p>\n",
+            ),
+            (
+                "<https://example.com/>**重要**",
+                "<p><a href=\"https://example.com/\" title=\"\">https://example.com/</a><strong>重要</strong></p>\n",
+            ),
+        ] {
+            assert_eq!(main_html(input), expected, "入力: {input:?}");
+        }
     }
 
     #[test]
