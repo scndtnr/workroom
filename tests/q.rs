@@ -146,6 +146,71 @@ fn ask_normalizes_question_newlines_and_preserves_literal_backslashes_and_backgr
 }
 
 #[test]
+fn ask_warns_for_literal_newlines_outside_backticks_without_changing_stored_text() {
+    const WARNING: &str = r"警告: 質問か背景に \n の2文字があります。改行にはなりません（改行の渡し方は workroom q ask --help）。パスなどで意図したものなら無視してよい";
+    let env = Env::new();
+    let id_pattern = regex::Regex::new(r"^Q-\d{8}-\d{2,}\n$").unwrap();
+    for (question, background, warn) in [
+        (r"1行目\n2行目", "背景", true),
+        (r"C:\new\notes", "背景", true),
+        ("1行目\n2行目", "背景\n2行目", false),
+        (r"`C:\new\notes` を参照", "背景", false),
+        ("質問", r"背景\n2行目", true),
+        ("質問", r"`C:\new\notes` を参照", false),
+        (r"質問\n2行目", r"背景\n2行目", true),
+        (r"`C:\new\notes` の外に\n", "背景", true),
+    ] {
+        let out = env.run(&["ask", question, "--background", background]);
+        success(&out);
+        let id = stdout(&out);
+        assert!(id_pattern.is_match(&id));
+        let mut expected_stderr = format!("起票しました: {}（未回答 {} 件）\n", id.trim(), env.events().len());
+        if warn {
+            expected_stderr.push_str(WARNING);
+            expected_stderr.push('\n');
+        }
+        assert_eq!(stderr(&out), expected_stderr, "{question:?} / {background:?}");
+        let events = env.events();
+        let event = events.last().unwrap();
+        assert_eq!(event["question"], question);
+        assert_eq!(event["background"], background);
+        assert_eq!(event["id"], id.trim());
+    }
+    let source = fs::read_to_string(env.room.join("QUESTIONS.jsonl")).unwrap();
+    assert_eq!(source.lines().count(), 8);
+    // JSON でも実際の改行（\n）と区別し、2文字を保ったエスケープ（\\n）で保存する。
+    assert!(source.contains(r#""question":"1行目\\n2行目""#));
+    assert!(source.contains(r#""background":"背景\\n2行目""#));
+    assert!(!env.base.join("state").exists());
+    assert!(!env.base.join("claude").exists());
+}
+
+#[test]
+fn q_help_and_skill_explain_the_same_question_writing_rules() {
+    let env = Env::new();
+    let skill = include_str!("../skills/workroom/SKILL.md");
+    for flag in ["-h", "--help"] {
+        let out = env.run(&["ask", flag]);
+        success(&out);
+        assert!(out.stderr.is_empty());
+        let help = stdout(&out);
+        for term in ["1〜3行", "--background", "半角スペース", "バッククォート", "単引用符"] {
+            assert!(help.contains(term), "{flag} に {term} がない: {help}");
+            assert!(skill.contains(term), "スキルに {term} がない");
+        }
+    }
+    let out = env.run(&["done", "--help"]);
+    success(&out);
+    let help = stdout(&out);
+    assert!(help.contains("--upto") && help.contains("そのまま"), "{help}");
+    let out = env.run(&["--help"]);
+    success(&out);
+    let help = stdout(&out);
+    assert!(help.contains("workroom skill"), "{help}");
+    assert!(!env.room.join("QUESTIONS.jsonl").exists());
+}
+
+#[test]
 fn question_length_counts_normalized_newlines_as_one_character() {
     let env = Env::new();
     let question = format!("{}\r\nい", "あ".repeat(998));

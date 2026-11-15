@@ -420,6 +420,24 @@ fn init_prints_wrapper_for_each_shell() {
 }
 
 #[test]
+fn skill_outputs_embedded_markdown_even_with_invalid_config_without_writing_files() {
+    let env = Env::new();
+    for invalid_config in [false, true] {
+        if invalid_config {
+            env.write_config("root = [");
+        }
+        let out = env.run(&["skill"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(out.stdout, include_bytes!("../skills/workroom/SKILL.md"));
+        assert!(out.stderr.is_empty(), "{}", stderr(&out));
+        assert!(!env.root.exists());
+        assert!(!env.base.join("state").exists());
+        assert!(!env.base.join("claude").exists());
+        assert_eq!(fs::read_dir(&env.base).unwrap().count(), usize::from(invalid_config));
+    }
+}
+
+#[test]
 fn help_is_japanese() {
     let env = Env::new();
     let out = stdout(&env.run(&["--help"]));
