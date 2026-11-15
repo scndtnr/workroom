@@ -26,6 +26,8 @@
   let sentQuestionFilterVersion = 0;
   let draftWarningShown = false;
   let questionGroups = [];
+  let knownRooms = [];
+  let knownQuestionRooms = [];
   let visibleQuestions = [];
   let renderedQuestionParams = null;
   let composingAnswer = false;
@@ -128,19 +130,215 @@
     }
     return ranges;
   }
-  function appendLinkedText(parent, text) {
-    let offset = 0;
-    for (const { start, end } of findUrlRanges(text)) {
-      parent.append(document.createTextNode(text.slice(offset, start)));
-      const url = text.slice(start, end);
-      parent.append(separateTab(url, url));
+  // 検出は設定・DOM・ハッシュに触れず、渡された文字列だけで行う。
+  function pathCharacterEqual(left, right, windows) {
+    if (left === "\\") left = "/";
+    if (right === "\\") right = "/";
+    return windows ? left.toLowerCase() === right.toLowerCase() : left === right;
+  }
+  function pathRootLength(text, start, root, windows) {
+    for (let index = 0; index < root.length; index++) {
+      if (start + index >= text.length || !pathCharacterEqual(text[start + index], root[index], windows)) return 0;
+    }
+    return /[/\\]/.test(text[start + root.length] || "") ? root.length : 0;
+  }
+  function normalizedPathParts(value) {
+    if (value.trim() !== value || /[\p{Cc}<>"|?*]/u.test(value) || value.includes("://")) return null;
+    const parts = value.replace(/\\/g, "/").split(/\/+/).filter((part) => part && part !== ".");
+    return parts.some((part) => part.startsWith(".")) ? null : parts;
+  }
+  function isPathRoomName(value) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})-[\s\S]+$/.exec(value || "");
+    if (!match) return false;
+    const [, year, month, day] = match.map(Number);
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1];
+  }
+  function absolutePathTarget(value, root, windows) {
+    if (!root || !pathRootLength(value, 0, root, windows) || !normalizedPathParts(value)) return null;
+    const parts = normalizedPathParts(value.slice(root.length));
+    if (!parts?.length) return null;
+    const roomLength = isPathRoomName(parts[0]) ? 1
+      : !parts[0].startsWith("_") && isPathRoomName(parts[1]) ? 2 : 0;
+    if (!roomLength) return null;
+    return { room: parts.slice(0, roomLength).join("/"), path: parts.slice(roomLength).join("/") };
+  }
+  function quotedPathTarget(value, root, windows) {
+    if (/^[/\\~]|^[a-z]:|^file:/i.test(value)) return absolutePathTarget(value, root, windows);
+    if (value.includes(":")) return null;
+    const parts = normalizedPathParts(value);
+    if (!parts) return null;
+    const extension = /^.+\.([a-z0-9]{1,10})$/i.exec(value.split(/[/\\]/).at(-1));
+    if (!/[/\\]/.test(value) && !(extension && /[a-z]/i.test(extension[1]))) return null;
+    return { room: null, path: parts.join("/") };
+  }
+  function trimPathEnd(text, start, end) {
+    const balances = [0, 0, 0];
+    for (let index = start; index < end; index++) {
+      const open = "([{".indexOf(text[index]);
+      const close = ")]}".indexOf(text[index]);
+      if (open >= 0) balances[open]++;
+      if (close >= 0) balances[close]--;
+    }
+    while (end > start) {
+      const last = text[end - 1];
+      const close = ")]}".indexOf(last);
+      // 親を指す要素を句点として削ると、別のリンク先に化けてしまう。
+      if (last === "." && text[end - 2] === "." && /[/\\]/.test(text[end - 3] || "")) break;
+      if (".,;:!?".includes(last)) end--;
+      else if (close >= 0 && balances[close] < 0) { balances[close]++; end--; }
+      else break;
+    }
+    return end;
+  }
+  function mergeLinkRanges(left, right) {
+    const ranges = [];
+    let first = 0;
+    let second = 0;
+    while (first < left.length || second < right.length) {
+      if (second === right.length || (first < left.length && left[first].start < right[second].start)) ranges.push(left[first++]);
+      else ranges.push(right[second++]);
+    }
+    return ranges;
+  }
+  function findPathRanges(text, { root, windows }, urls = findUrlRanges(text)) {
+    root = root.replace(/\\/g, "/").replace(/\/+$/, "");
+    const pairs = [];
+    const quoted = [];
+    const backticks = /`([^`\r\n]*)`/g;
+    let urlIndex = 0;
+    for (let match; (match = backticks.exec(text)) !== null;) {
+      const start = match.index;
+      const end = backticks.lastIndex;
+      // 空の組も先に消費し、隣の組との対応がずれないようにする。
+      pairs.push({ start, end });
+      while (urlIndex < urls.length && urls[urlIndex].end <= start) urlIndex++;
+      if (!match[1] || (urlIndex < urls.length && urls[urlIndex].start < end)) continue;
+      const target = quotedPathTarget(match[1], root, windows);
+      if (target) quoted.push({ start: start + 1, end: end - 1, kind: "path", ...target });
+    }
+    if (!root) return quoted;
+    const excluded = mergeLinkRanges(urls, pairs);
+    const bare = [];
+    let excludedIndex = 0;
+    for (let index = 0; index < text.length;) {
+      while (excludedIndex < excluded.length && excluded[excludedIndex].end <= index) excludedIndex++;
+      if (excludedIndex < excluded.length && excluded[excludedIndex].start <= index) {
+        index = excluded[excludedIndex].end;
+        continue;
+      }
+      if ((index > 0 && /[a-z0-9/\\._~:-]/i.test(text[index - 1])) || !pathRootLength(text, index, root, windows)) { index++; continue; }
+      const limit = excludedIndex < excluded.length ? excluded[excludedIndex].start : text.length;
+      let end = index;
+      while (end < limit && !/[\s\p{Cc}'"`「」（）、。<>|*?]/u.test(text[end])) end++;
+      const trimmedEnd = trimPathEnd(text, index, end);
+      const target = absolutePathTarget(text.slice(index, trimmedEnd), root, windows);
+      if (target) bare.push({ start: index, end: trimmedEnd, kind: "path", ...target });
+      index = Math.max(index + 1, end);
+    }
+    return mergeLinkRanges(quoted, bare);
+  }
+  function findLinkRanges(text, options) {
+    const urls = findUrlRanges(text).map((range) => ({ ...range, kind: "url" }));
+    return mergeLinkRanges(urls, findPathRanges(text, options, urls));
+  }
+  function canonicalPathRoom(room) {
+    if (config.shell !== "powershell") return room;
+    return [...knownRooms, ...knownQuestionRooms].find((label) => label.length === room.length
+      && label.split("").every((character, index) => pathCharacterEqual(character, room[index], true))) || room;
+  }
+  function pathSelection(range, context) {
+    const params = state();
+    const room = canonicalPathRoom(range.room || context.room);
+    const values = { room, tab: range.path ? "files" : null, file: range.path || null };
+    if (params.get("page") === "questions" && context.questionId && room === canonicalPathRoom(context.room)) {
+      return { ...values, page: "questions", q: context.questionId };
+    }
+    if (params.get("page") === "questions" && !context.questionId && room === params.get("room")) return values;
+    values.page = "rooms";
+    if (room !== params.get("room")) values.q = null;
+    return values;
+  }
+  async function navigatePath(range, context) {
+    const room = canonicalPathRoom(range.room || context.room);
+    const previousHash = location.hash;
+    const ticket = generation;
+    try {
+      if (![...knownRooms, ...knownQuestionRooms].includes(room)) {
+        const response = await fetch("/api/files?" + new URLSearchParams({ room }), { cache: "no-store", signal: requestController?.signal });
+        await response.body?.cancel();
+        if (ticket !== generation || location.hash !== previousHash) return;
+        if (response.status === 404) { notice(`部屋が見つかりません：${room}`, true, "preview"); return; }
+        if (!response.ok) throw new Error(`読み取れません（HTTP ${response.status}）`);
+      }
+      change(pathSelection(range, context));
+    } catch (error) {
+      if (ticket === generation && location.hash === previousHash) showError(error, "preview");
+    }
+  }
+  function pathLink(text, range, context) {
+    const link = element("a", text, "path-link");
+    const updateHref = () => {
+      const params = state();
+      for (const [key, value] of Object.entries(pathSelection(range, context))) {
+        if (value === null) params.delete(key);
+        else params.set(key, value);
+      }
+      link.href = "#" + params.toString();
+    };
+    updateHref();
+    for (const event of ["pointerdown", "focus", "contextmenu"]) link.addEventListener(event, updateHref);
+    link.addEventListener("click", (event) => {
+      updateHref();
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      navigatePath(range, context);
+    });
+    return link;
+  }
+  // カードの本文でインラインコードとして見せる、同じ行の中の、空白だけでないバッククォートの組。
+  // 組の作り方は findPathRanges と同じにする（空の組も消費して、隣の組との対応をそろえる）。
+  function findCodeSpans(text) {
+    const spans = [];
+    const backticks = /`([^`\r\n]*)`/g;
+    for (let match; (match = backticks.exec(text)) !== null;) {
+      if (match[1].trim()) spans.push({ start: match.index, end: backticks.lastIndex });
+    }
+    return spans;
+  }
+  function appendRanges(parent, text, from, to, ranges, context) {
+    let offset = from;
+    for (const range of ranges) {
+      const { start, end } = range;
+      if (start < from || end > to) continue;
+      if (start > offset) parent.append(document.createTextNode(text.slice(offset, start)));
+      const label = text.slice(start, end);
+      parent.append(range.kind === "path" ? pathLink(label, range, context) : separateTab(label, label));
       offset = end;
     }
-    parent.append(document.createTextNode(text.slice(offset)));
+    if (to > offset) parent.append(document.createTextNode(text.slice(offset, to)));
   }
-  function linkedElement(tag, text, className) {
+  function appendLinkedText(parent, text, context) {
+    const ranges = context ? findLinkRanges(text, { root: config.root, windows: config.shell === "powershell" }) : findUrlRanges(text);
+    if (!context?.code) {
+      appendRanges(parent, text, 0, text.length, ranges, context);
+      return;
+    }
+    // URL・パスの範囲は組の境界をまたがない（URL はバッククォートで止まり、素のパスは組の外だけで探す）。
+    let offset = 0;
+    for (const span of findCodeSpans(text)) {
+      appendRanges(parent, text, offset, span.start, ranges, context);
+      const code = element("code", undefined, "inline-code");
+      appendRanges(code, text, span.start + 1, span.end - 1, ranges, context);
+      parent.append(code);
+      offset = span.end;
+    }
+    appendRanges(parent, text, offset, text.length, ranges, context);
+  }
+  function linkedElement(tag, text, className, context) {
     const node = element(tag, undefined, className);
-    appendLinkedText(node, text);
+    appendLinkedText(node, text, context);
     return node;
   }
   function button(text, action, selected = false) {
@@ -715,12 +913,12 @@
     guide.append(heading, message, status);
     $("answer-guides").replaceChildren(guide);
   }
-  function questionChoices(question) {
+  function questionChoices(question, room) {
     const choices = element("ol", undefined, "answer-choices");
     const info = ask(question);
     (info.choices || []).forEach((choice, index) => {
       const line = element("li");
-      const text = linkedElement("span", choice, "choice-text");
+      const text = linkedElement("span", choice, "choice-text", { room, questionId: question.id, code: true });
       if (info.recommend === index + 1) text.append(document.createTextNode(" "), chip("推奨", "recommend"));
       line.append(text);
       choices.append(line);
@@ -822,6 +1020,7 @@
     return badge;
   }
   function questionCard(question, room, params, showRoom = false, outside = false) {
+    const context = { room, questionId: question.id, code: true };
     const color = stateColors[question.state] || "gone";
     const card = element("section", undefined, "question " + color);
     card.dataset.questionId = question.id;
@@ -853,8 +1052,8 @@
     if (params.get("page") === "questions") body.append(questionLink(room, question.id, "部屋のページで開く", true));
     const text = info.question || "質問なし";
     const firstBreak = text.indexOf("\n");
-    const questionText = linkedElement("p", firstBreak < 0 ? text : text.slice(0, firstBreak), "question-text");
-    if (firstBreak >= 0) questionText.append(linkedElement("span", text.slice(firstBreak), "rest"));
+    const questionText = linkedElement("p", firstBreak < 0 ? text : text.slice(0, firstBreak), "question-text", context);
+    if (firstBreak >= 0) questionText.append(linkedElement("span", text.slice(firstBreak), "rest", context));
     body.append(questionText);
     if (!question.ask) body.append(element("p", "質問なし（写しから表示）", "warning"));
     if (info.origin) {
@@ -864,28 +1063,28 @@
     }
     if (info.background) {
       const background = element("div", undefined, "question-background");
-      background.append(element("strong", "背景"), linkedElement("div", info.background, "linked-text"));
+      background.append(element("strong", "背景"), linkedElement("div", info.background, "linked-text", context));
       body.append(background);
     }
-    const choices = questionChoices(question);
+    const choices = questionChoices(question, room);
     if (choices.childElementCount) body.append(choices);
     for (const answer of question.answers) {
       const reflected = answer.n <= question.reflected_upto;
       const block = element("div", undefined, "answer" + (reflected ? " reflected" : ""));
       const meta = element("p", `回答 ${answer.n} · `, "answer-meta");
       meta.append(recordedTime(answer.at), document.createTextNode(` · ${answer.kind === "not_needed" ? "回答不要" : "回答"} · ${reflected ? "反映済み" : "未反映"}`));
-      block.append(meta, linkedElement("p", answer.text || "（理由なし）", "linked-text"));
+      block.append(meta, linkedElement("p", answer.text || "（理由なし）", "linked-text", context));
       body.append(block);
     }
     for (const event of question.done) {
-      const target = linkedElement("p", `反映先: ${event.to}（`, "linked-text");
+      const target = linkedElement("p", `反映先: ${event.to}（`, "linked-text", context);
       target.append(recordedTime(event.at), document.createTextNode(`、回答 ${event.upto} まで）`));
       body.append(target);
-      if (event.chat) body.append(linkedElement("p", "会話での回答: " + event.chat, "linked-text"));
+      if (event.chat) body.append(linkedElement("p", "会話での回答: " + event.chat, "linked-text", context));
     }
     const withdrawal = question.withdrawals.at(-1);
     if (withdrawal) {
-      body.append(linkedElement("p", "取り下げの理由: " + withdrawal.reason, "linked-text"));
+      body.append(linkedElement("p", "取り下げの理由: " + withdrawal.reason, "linked-text", context));
       if (withdrawal.successor) {
         const successor = element("p", "後継: ");
         successor.append(questionLink(room, withdrawal.successor));
@@ -916,7 +1115,7 @@
     body.append(error);
     return card;
   }
-  async function textPreview(response, parent, ticket) {
+  async function textPreview(response, parent, ticket, room) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let text = "";
@@ -934,12 +1133,12 @@
       text += decoder.decode();
     } finally { await reader.cancel(); }
     if (ticket !== generation) return;
-    parent.append(linkedElement("pre", text));
+    parent.append(linkedElement("pre", text, undefined, { room }));
     if (size >= limit) parent.append(element("p", "先頭 1 MiB までを表示しています。", "muted"));
   }
-  async function preview(parent, room, path, ticket, fileToggle, quiet = false) {
+  async function preview(parent, room, path, ticket, fileToggle, quiet = false, files = null) {
     try {
-      await renderPreview(parent, room, path, ticket, fileToggle);
+      await renderPreview(parent, room, path, ticket, fileToggle, files);
       if (ticket === generation && !quiet) clearNotice("preview");
     } catch (error) {
       // ファイル取得の失敗を、部屋・確認事項の再取得の失敗と区別する。
@@ -947,7 +1146,13 @@
       throw error;
     }
   }
-  async function renderPreview(parent, room, path, ticket, fileToggle) {
+  function previewFileInfo(files, path) {
+    const items = files ? [...files.main.items, ...files.other.items] : [];
+    const item = items.find((entry) => entry.path === path);
+    const directory = item?.kind === "directory" || items.some((entry) => entry.path.startsWith(path + "/"));
+    return { item, directory };
+  }
+  async function renderPreview(parent, room, path, ticket, fileToggle, files) {
     if (ticket !== generation) return;
     const panel = element("section", undefined, "preview");
     const heading = element("div", undefined, "preview-header");
@@ -955,6 +1160,26 @@
     const title = element("h3", path);
     title.title = path;
     heading.append(title);
+    panel.append(heading);
+    const body = element("div", undefined, "preview-body");
+    panel.append(body);
+    parent.append(panel);
+    const { item, directory } = previewFileInfo(files, path);
+    if (directory) {
+      body.append(element("p", "フォルダです。"), openButton("フォルダを開く", { room, path, folder: true }));
+      return;
+    }
+    if (files && !item) {
+      const checkUrl = fileUrl(room, path, false);
+      checkUrl.searchParams.set("raw", "1");
+      const response = await fetch(checkUrl, { cache: "no-store", signal: requestController?.signal });
+      await response.body?.cancel();
+      if (ticket !== generation) return;
+      if (!response.ok) {
+        body.append(element("p", `読み取れません（HTTP ${response.status}）`, "warning"));
+        return;
+      }
+    }
     const url = fileUrl(room, path);
     const toolbar = element("div", undefined, "toolbar");
     toolbar.append(separateTab(hubUrl(room, path)), separateTab(url, "ファイルだけを開く"));
@@ -975,10 +1200,6 @@
       );
     }
     heading.append(toolbar);
-    panel.append(heading);
-    const body = element("div", undefined, "preview-body");
-    panel.append(body);
-    parent.append(panel);
     if (((markdown || ["html", "htm"].includes(extension)) && !textMode) || extension === "pdf") {
       body.classList.add("framed");
       const frame = element("iframe");
@@ -997,7 +1218,7 @@
       const response = await fetch(url, { cache: "no-store", signal: requestController?.signal });
       if (ticket !== generation) { await response.body?.cancel(); return; }
       if (!response.ok) throw new Error(`読み取れません（HTTP ${response.status}）`);
-      if (response.headers.get("Content-Type")?.startsWith("text/plain")) await textPreview(response, body, ticket);
+      if (response.headers.get("Content-Type")?.startsWith("text/plain")) await textPreview(response, body, ticket, room);
       else {
         await response.body.cancel();
         if (ticket !== generation) return;
@@ -1031,9 +1252,9 @@
     const files = tab === "overview" && room.readme ? null : await api("/api/files?" + new URLSearchParams({ room: label }));
     if (ticket !== generation) return;
     const path = files ? params.get("file") || "" : "README.md";
-    const item = files && [...files.main.items, ...files.other.items].find((item) => item.path === path);
+    const { item, directory } = previewFileInfo(files, path);
     // README の概要には個別のメタデータがない。静かな更新ではそのプレビューを保持する。
-    const previewKey = JSON.stringify([label, tab, path, params.get("view"), item ? [item.kind, item.size, item.modified] : null]);
+    const previewKey = JSON.stringify([label, tab, path, params.get("view"), item ? [item.kind, item.size, item.modified] : directory ? ["directory"] : null]);
     const headerKey = JSON.stringify([room, tab]);
     const browserKey = JSON.stringify([files, path]);
     const header = element("div", undefined, "room-header");
@@ -1118,7 +1339,7 @@
     });
     toggle.setAttribute("aria-controls", "file-browser");
     update();
-    if (params.get("file")) await preview(pane, room, params.get("file"), ticket, toggle, quiet);
+    if (params.get("file")) await preview(pane, room, params.get("file"), ticket, toggle, quiet, files);
     else {
       const toolbar = element("div", undefined, "toolbar");
       toolbar.append(toggle);
@@ -1344,6 +1565,7 @@
     try {
       const data = await load("refresh", () => api("/api/rooms?" + scope(params)));
       if (ticket !== generation) return;
+      knownRooms = data.rooms.map((room) => room.room);
       const selected = data.rooms.find((room) => room.room === params.get("room")) || (page === "rooms" ? data.rooms[0] : null);
       if (page === "rooms" && selected && params.get("room") !== selected.room) {
         if (params.has("room")) { params.delete("q"); params.delete("file"); }
@@ -1375,7 +1597,10 @@
       } else {
         const question = await load("questions", async () => {
           const questions = await api("/api/questions/all?" + scope(params, true));
-          if (ticket === generation) return renderQuestions(questions.rooms, params, ticket, false, quiet);
+          if (ticket === generation) {
+            knownQuestionRooms = questions.rooms.map((room) => room.room);
+            return renderQuestions(questions.rooms, params, ticket, false, quiet);
+          }
         });
         if (ticket !== generation) return;
         if (selected && question) await load("room-detail", () => showRoom(selected, params, ticket, quiet));

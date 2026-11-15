@@ -5,6 +5,7 @@
   --human: #1a5bc4; --human-bg: #e3edfd; --agent: #8a5300; --agent-bg: #fcefd6;
   --done: #2f6f45; --done-bg: #e2f2e7; --gone: #5f6b7d; --gone-bg: #eceff3;
   --draft: #6a43bd; --draft-bg: #efe9fb; --error: #b42318; --error-bg: #fde8e6;
+  --code-bg: color-mix(in srgb, var(--fg) 5%, transparent);
 }
 @media (prefers-color-scheme: dark) {
   :root:not(.light) {
@@ -14,6 +15,7 @@
     --human: #93bbff; --human-bg: #1c3253; --agent: #f0c36f; --agent-bg: #3a2c12;
     --done: #8fd3a5; --done-bg: #1a3324; --gone: #a5aebd; --gone-bg: #29303b;
     --draft: #c7adff; --draft-bg: #2f2548; --error: #ff9d92; --error-bg: #431f1c;
+    --code-bg: color-mix(in srgb, var(--fg) 12%, transparent);
   }
 }
 :root.dark {
@@ -23,6 +25,7 @@
   --human: #93bbff; --human-bg: #1c3253; --agent: #f0c36f; --agent-bg: #3a2c12;
   --done: #8fd3a5; --done-bg: #1a3324; --gone: #a5aebd; --gone-bg: #29303b;
   --draft: #c7adff; --draft-bg: #2f2548; --error: #ff9d92; --error-bg: #431f1c;
+  --code-bg: color-mix(in srgb, var(--fg) 12%, transparent);
 }
 :root.light { color-scheme: light; }
 * { box-sizing: border-box; }
@@ -136,6 +139,9 @@ iframe { display: block; width: 100%; height: 100%; min-height: 0; border: 1px s
 .preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
 details .preview { height: 60vh; }
 pre { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.6 ui-monospace, monospace; }
+code { font-family: ui-monospace, monospace; }
+/* カードの本文のバッククォートの組。地は文字色を薄く重ね（ライト 5%・ダーク 12%）、細い枠で見分ける。色相は増やさない。 */
+.inline-code { font-size: 0.92em; padding: 0 0.25em; border-radius: 3px; border: 1px solid var(--line); background: var(--code-bg); color: inherit; overflow-wrap: anywhere; }
 .font-ud pre, .font-ud code { font-family: "BIZ UDGothic", "BIZ UDゴシック", ui-monospace, monospace; }
 .question { border: 1px solid var(--line); border-radius: 6px; margin: 8px 3px; background: var(--panel); break-inside: avoid; }
 .question button, .question a { max-width: 100%; overflow-wrap: anywhere; text-align: left; }
@@ -149,7 +155,8 @@ pre { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/
 .question-id:hover { text-decoration: underline; }
 .question-meta { margin-left: auto; font-size: 12px; color: var(--muted); }
 .question-body { padding: 6px 10px 10px; }
-.question.selected-question { outline: 2px solid var(--ink); outline-offset: 1px; }
+/* 枠の外に離した outline は角の丸みと合わずにずれて見えるため、カードの枠そのものを太くする。 */
+.question.selected-question { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
 .question.withdrawn { color: var(--muted); }
 .question-text { white-space: pre-wrap; font-size: 15px; font-weight: 600; line-height: 1.7; margin: 6px 0 0; overflow-wrap: anywhere; }
 .question-text .rest { font-weight: 400; }
