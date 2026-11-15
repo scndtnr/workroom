@@ -27,6 +27,8 @@ pub struct EntriesOptions<'a> {
     pub depth: usize,
     /// ディレクトリも含め、返す項目全体の上限。
     pub max_items: usize,
+    /// ハブ用。ファイルを先に並べ、上限では浅い項目から残して深さ優先で返す。
+    pub files_first: bool,
     pub exclude: &'a [String],
     /// 起点直下だけで除外する名前（成果物の区分を分けるため）。
     pub root_exclude: &'a [String],
@@ -40,15 +42,60 @@ pub struct Entries {
 }
 
 /// 中身を読まずにメタデータの一覧を作る。ドットで始まる名前と exclude は各階層で除く。
-/// ディレクトリを先に、大小文字を区別しない名前順の深さ優先で返す。
+/// 大小文字を区別しない名前順の深さ優先で返す。並びと上限の選び方は files_first に従う。
 /// リンク先はたどらず、読めないディレクトリは空として扱う（tree と同じ）。
 pub fn entries(path: &Path, opts: &EntriesOptions) -> Entries {
     let mut out = Entries::default();
-    walk_entries(path, Path::new(""), opts.depth, opts, &mut out);
+    if opts.files_first {
+        let mut scanned = Vec::new();
+        walk_entries(path, Path::new(""), opts.depth, opts, &mut |entry| scanned.push(entry));
+        let mut selected: Vec<_> = scanned.into_iter().enumerate().collect();
+        // 同じ深さでは走査順を保ち、選んだ後に深さ優先の順へ戻す。
+        selected.sort_unstable_by_key(|(index, entry)| (entry.depth, *index));
+        out.omitted = selected.len().saturating_sub(opts.max_items);
+        selected.truncate(opts.max_items);
+        selected.sort_unstable_by_key(|(index, _)| *index);
+        out.items = selected.into_iter().map(|(_, entry)| entry.with_metadata(path)).collect();
+    } else {
+        walk_entries(path, Path::new(""), opts.depth, opts, &mut |entry| {
+            if out.items.len() < opts.max_items {
+                out.items.push(entry.with_metadata(path));
+            } else {
+                out.omitted += 1;
+            }
+        });
+    }
     out
 }
 
-fn walk_entries(root: &Path, relative: &Path, depth: usize, opts: &EntriesOptions, out: &mut Entries) {
+/// 走査中はパスと種類だけを保持し、残す項目のメタデータだけを後で取得する。
+struct ScannedEntry {
+    path: PathBuf,
+    name: String,
+    kind: EntryKind,
+    depth: usize,
+}
+
+impl ScannedEntry {
+    fn with_metadata(self, root: &Path) -> Entry {
+        let metadata = std::fs::symlink_metadata(root.join(&self.path)).ok();
+        Entry {
+            path: self.path,
+            name: self.name,
+            kind: self.kind,
+            size: metadata.as_ref().filter(|m| m.is_file()).map(|m| m.len()),
+            modified: metadata.and_then(|m| m.modified().ok()),
+        }
+    }
+}
+
+fn walk_entries(
+    root: &Path,
+    relative: &Path,
+    depth: usize,
+    opts: &EntriesOptions,
+    visit: &mut impl FnMut(ScannedEntry),
+) {
     if depth == 0 {
         return;
     }
@@ -73,28 +120,17 @@ fn walk_entries(root: &Path, relative: &Path, depth: usize, opts: &EntriesOption
         })
         .collect();
     items.sort_by(|a, b| {
-        (b.2 == EntryKind::Directory)
-            .cmp(&(a.2 == EntryKind::Directory))
+        ((b.2 == EntryKind::Directory) != opts.files_first)
+            .cmp(&((a.2 == EntryKind::Directory) != opts.files_first))
             .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
             .then_with(|| a.0.file_name().cmp(&b.0.file_name()))
     });
     for (entry, name, kind) in items {
         let path = relative.join(entry.file_name());
-        if out.items.len() < opts.max_items {
-            let metadata = std::fs::symlink_metadata(entry.path()).ok();
-            out.items.push(Entry {
-                path: path.clone(),
-                name,
-                kind,
-                size: metadata.as_ref().filter(|m| m.is_file()).map(|m| m.len()),
-                modified: metadata.and_then(|m| m.modified().ok()),
-            });
-        } else {
-            out.omitted += 1;
-        }
+        visit(ScannedEntry { path: path.clone(), name, kind, depth: opts.depth - depth + 1 });
         if kind == EntryKind::Directory {
             // 上限を超えた後も深さの範囲内を数えるが、各項目のメタデータは取得しない。
-            walk_entries(root, &path, depth - 1, opts, out);
+            walk_entries(root, &path, depth - 1, opts, visit);
         }
     }
 }
@@ -279,7 +315,10 @@ mod tests {
             fs::write(root.join(name).join("ignored.txt"), "除外").unwrap();
         }
         let exclude = vec!["node_modules".into(), "skip.txt".into()];
-        let listing = entries(root, &EntriesOptions { depth: 3, max_items: 100, exclude: &exclude, root_exclude: &[] });
+        let listing = entries(
+            root,
+            &EntriesOptions { depth: 3, max_items: 100, files_first: false, exclude: &exclude, root_exclude: &[] },
+        );
         let paths: Vec<_> = listing.items.iter().map(|e| e.path.clone()).collect();
         assert_eq!(
             paths,
@@ -319,7 +358,10 @@ mod tests {
             (2, 0, vec![], 6),
             (2, 100, vec!["a", "a/1.txt", "a/2.txt", "b", "b/1.txt", "c.txt"], 0),
         ] {
-            let listing = entries(root, &EntriesOptions { depth, max_items, exclude: &[], root_exclude: &[] });
+            let listing = entries(
+                root,
+                &EntriesOptions { depth, max_items, files_first: false, exclude: &[], root_exclude: &[] },
+            );
             assert_eq!(
                 listing.items.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
                 expected.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
@@ -334,7 +376,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("file");
         fs::write(&file, "").unwrap();
-        let opts = EntriesOptions { depth: 4, max_items: 500, exclude: &[], root_exclude: &[] };
+        let opts = EntriesOptions { depth: 4, max_items: 500, files_first: false, exclude: &[], root_exclude: &[] };
         assert_eq!(entries(&dir.path().join("missing"), &opts), Entries::default());
         assert_eq!(entries(&file, &opts), Entries::default());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
@@ -362,12 +404,111 @@ mod tests {
             }
             panic!("シンボリックリンクを作れません: {error}");
         }
-        let listing = entries(&root, &EntriesOptions { depth: 4, max_items: 500, exclude: &[], root_exclude: &[] });
-        assert_eq!(listing.items.len(), 1);
-        assert_eq!(listing.items[0].kind, EntryKind::Symlink);
-        assert_eq!(listing.items[0].path, PathBuf::from("link"));
-        assert_eq!(listing.items[0].size, None);
+        for files_first in [false, true] {
+            let listing = entries(
+                &root,
+                &EntriesOptions { depth: 4, max_items: 500, files_first, exclude: &[], root_exclude: &[] },
+            );
+            assert_eq!(listing.items.len(), 1);
+            assert_eq!(listing.items[0].kind, EntryKind::Symlink);
+            assert_eq!(listing.items[0].path, PathBuf::from("link"));
+            assert_eq!(listing.items[0].size, None);
+            assert_eq!(listing.omitted, 0);
+        }
+    }
+
+    #[test]
+    fn files_first_entries_preserve_name_order_at_every_depth_and_exclusions() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for name in ["a-dir/nested", "B-dir", "ignored", ".hidden"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        for name in [
+            "z.md",
+            "B.md",
+            "a.md",
+            "a-dir/z.md",
+            "a-dir/A.md",
+            "a-dir/nested/b.md",
+            "a-dir/nested/A.md",
+            "B-dir/empty.txt",
+            "skip.md",
+            "a-dir/skip.md",
+            "a-dir/.hidden",
+            "ignored/skip.md",
+            ".hidden/skip.md",
+        ] {
+            fs::write(root.join(name), "本文").unwrap();
+        }
+        let opts = EntriesOptions {
+            depth: 4,
+            max_items: 100,
+            files_first: true,
+            exclude: &["skip.md".into()],
+            root_exclude: &["ignored".into(), "A.md".into()],
+        };
+        let listing = entries(root, &opts);
+        assert_eq!(
+            listing.items.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
+            [
+                "a.md",
+                "B.md",
+                "z.md",
+                "a-dir",
+                "a-dir/A.md",
+                "a-dir/z.md",
+                "a-dir/nested",
+                "a-dir/nested/A.md",
+                "a-dir/nested/b.md",
+                "B-dir",
+                "B-dir/empty.txt",
+            ]
+            .map(PathBuf::from)
+        );
         assert_eq!(listing.omitted, 0);
+        assert_eq!(listing.items[0].size, Some(6));
+    }
+
+    #[test]
+    fn files_first_entries_keep_shallow_items_then_return_depth_first_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("docs/b/c")).unwrap();
+        fs::create_dir_all(root.join("outputs/b/c/d")).unwrap();
+        for name in [
+            "a.md",
+            "docs/plan.md",
+            "docs/b/c/1.md",
+            "docs/b/c/2.md",
+            "outputs/b/c/1.md",
+            "outputs/b/c/2.md",
+            "outputs/b/c/d/too-deep.md",
+        ] {
+            fs::write(root.join(name), "").unwrap();
+        }
+        for (depth, max_items, expected, omitted) in [
+            (
+                4,
+                8,
+                vec!["a.md", "docs", "docs/plan.md", "docs/b", "docs/b/c", "outputs", "outputs/b", "outputs/b/c"],
+                5,
+            ),
+            (4, 5, vec!["a.md", "docs", "docs/plan.md", "docs/b", "outputs"], 8),
+            (4, 3, vec!["a.md", "docs", "outputs"], 10),
+            (4, 0, vec![], 13),
+            (1, 100, vec!["a.md", "docs", "outputs"], 0),
+            (0, 100, vec![], 0),
+        ] {
+            let listing =
+                entries(root, &EntriesOptions { depth, max_items, files_first: true, exclude: &[], root_exclude: &[] });
+            assert_eq!(
+                listing.items.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
+                expected.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
+                "depth={depth}, max_items={max_items}"
+            );
+            assert_eq!(listing.omitted, omitted, "depth={depth}, max_items={max_items}");
+        }
     }
 
     #[test]

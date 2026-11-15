@@ -44,6 +44,23 @@
   let sidebarCollapsed = sidebarPreference === null ? compactViewport.matches : sidebarPreference === "collapsed";
   let filesCollapsed = false;
   try { filesCollapsed = localStorage.getItem("workroom-hub-files") === "collapsed"; } catch { /* 保存は任意 */ }
+  const closedFolders = new Map();
+  try {
+    const saved = JSON.parse(localStorage.getItem("workroom-hub-closed-folders"));
+    if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+      for (const [room, paths] of Object.entries(saved)) {
+        if (!Array.isArray(paths)) continue;
+        const closed = new Set(paths.filter((path) => typeof path === "string" && path));
+        if (closed.size) closedFolders.set(room, closed);
+      }
+    }
+  } catch { /* 読めないときはすべて開く */ }
+  // 「その他のファイル」は既定で開き、閉じた部屋だけを覚える。
+  const closedOtherFiles = new Set();
+  try {
+    const saved = JSON.parse(localStorage.getItem("workroom-hub-closed-other-files"));
+    if (Array.isArray(saved)) for (const room of saved) if (typeof room === "string" && room) closedOtherFiles.add(room);
+  } catch { /* 読めないときは開く */ }
   let collapsedPane = "";
   try {
     const saved = localStorage.getItem("workroom-hub-collapsed-pane");
@@ -788,7 +805,9 @@
     if (renderedQuestionParams) renderQuestions(questionGroups, renderedQuestionParams, generation, renderedQuestionParams.get("page") !== "questions");
   }
   function replaceQuestionGroup(room, group) {
-    questionGroups = questionGroups.map((current) => current.room === room ? group : current);
+    // 回答の応答と部屋単位の再取得には、全部屋の一覧で受け取った短い表記がない。
+    questionGroups = questionGroups.map((current) => current.room === room
+      ? { ...group, date: current.date, title: current.title } : current);
     redrawQuestions();
   }
   async function sendAnswers() {
@@ -1019,7 +1038,10 @@
       : "今の条件には合いませんが、選んでいるので表示しています";
     return badge;
   }
-  function questionCard(question, room, params, showRoom = false, outside = false) {
+  function shortRoomLabel(group) {
+    return group.date && group.title ? `${group.date} ${group.title}` : group.room;
+  }
+  function questionCard(question, room, params, roomLabel = null, outside = false) {
     const context = { room, questionId: question.id, code: true };
     const color = stateColors[question.state] || "gone";
     const card = element("section", undefined, "question " + color);
@@ -1031,7 +1053,11 @@
     if (selected) card.setAttribute("aria-current", "true");
     const info = ask(question);
     const heading = element("div", undefined, "question-head");
-    if (showRoom) heading.append(button(room, () => selectQuestion(room, question.id), selected));
+    if (roomLabel) {
+      const roomButton = button(roomLabel, () => selectQuestion(room, question.id), selected);
+      roomButton.title = room;
+      heading.append(roomButton);
+    }
     const id = button(question.id, () => selectQuestion(room, question.id), selected);
     id.classList.add("question-id");
     id.setAttribute("aria-label", `${question.id} を選ぶ`);
@@ -1229,22 +1255,149 @@
       }
     }
   }
-  function fileList(parent, group, room, params) {
-    if (!group.items.length) parent.append(element("p", "ファイルはありません。", "muted"));
-    const list = element("ul", undefined, "files");
-    for (const item of group.items) {
-      const line = element("li");
-      if (item.kind === "directory") line.append(element("span", item.path + "/", "directory"));
-      else {
-        const file = button(item.path, () => change({ file: item.path }), params.get("file") === item.path);
-        file.classList.add("file");
-        line.append(file);
-        if (item.size !== null) line.append(element("span", ` · ${item.size.toLocaleString()} B`, "file-size"));
-      }
-      list.append(line);
+  function buildFileTree(items) {
+    const roots = [];
+    const nodes = new Map(items.map((item) => [item.path, {
+      name: item.path.slice(item.path.lastIndexOf("/") + 1), path: item.path,
+      directory: item.kind === "directory", item, children: []
+    }]));
+    function folder(path) {
+      if (nodes.has(path)) return nodes.get(path);
+      const split = path.lastIndexOf("/");
+      const node = { name: path.slice(split + 1), path, directory: true, item: null, children: [] };
+      nodes.set(path, node);
+      const parent = split < 0 ? null : folder(path.slice(0, split));
+      if (!parent) roots.push(node);
+      else if (parent.directory) parent.children.push(node);
+      return node;
     }
-    parent.append(list);
+    // 実在する親の位置は、その項目を受け取った順に従う。子が先に来ても親を二重に作らない。
+    for (const item of items) {
+      const node = nodes.get(item.path);
+      const split = item.path.lastIndexOf("/");
+      const parent = split < 0 ? null : folder(item.path.slice(0, split));
+      if (!parent) roots.push(node);
+      else if (parent.directory) parent.children.push(node);
+    }
+    function partition(children) {
+      for (const node of children) if (node.directory) node.children = partition(node.children);
+      return [...children.filter((node) => !node.directory), ...children.filter((node) => node.directory)];
+    }
+    return partition(roots);
+  }
+  function ancestorPaths(path) {
+    const paths = [];
+    for (let split = path.indexOf("/"); split >= 0; split = path.indexOf("/", split + 1)) {
+      paths.push(path.slice(0, split));
+    }
+    return paths;
+  }
+  function saveClosedFolders(room, closed) {
+    if (closed.size) closedFolders.set(room, closed);
+    else closedFolders.delete(room);
+    try {
+      localStorage.setItem("workroom-hub-closed-folders", JSON.stringify(Object.fromEntries(
+        [...closedFolders].map(([label, paths]) => [label, [...paths]])
+      )));
+    } catch { /* 保存できなくてもメモリ上の開閉を保つ */ }
+  }
+  function folderIcon(open) {
+    const ns = "http://www.w3.org/2000/svg";
+    const icon = document.createElementNS(ns, "svg");
+    for (const [name, value] of Object.entries({
+      viewBox: "0 0 16 16", width: "14", height: "14", stroke: "currentColor",
+      "stroke-width": "1.3", "stroke-linejoin": "round", "aria-hidden": "true", class: "folder-icon"
+    })) icon.setAttribute(name, value);
+    const paths = open ? ["M1.75 12.75V3.75h4.2l1.4 1.5h5.4v2", "M1.75 12.75l1.9-5.5h10.6l-1.9 5.5z"]
+      : ["M1.75 3.75h4.2l1.4 1.5h6.9v7.5H1.75z"];
+    for (const d of paths) {
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", d);
+      icon.append(path);
+    }
+    return icon;
+  }
+  function fileList(parent, group, room, params) {
+    const folders = [];
+    function render(nodes) {
+      const list = element("ul", undefined, "files");
+      for (const node of nodes) {
+        const line = element("li");
+        if (node.directory) {
+          const children = render(node.children);
+          const toggle = element("button", undefined, "folder-toggle");
+          toggle.type = "button";
+          toggle.title = node.path + "/";
+          const triangle = element("span", undefined, "file-disclosure");
+          triangle.setAttribute("aria-hidden", "true");
+          let icon = folderIcon(true);
+          toggle.append(triangle, icon, element("span", node.name + "/", "folder-name"));
+          const setOpen = (open) => {
+            children.hidden = !open;
+            toggle.setAttribute("aria-expanded", String(open));
+            triangle.textContent = open ? "▾" : "▸";
+            const nextIcon = folderIcon(open);
+            icon.replaceWith(nextIcon);
+            icon = nextIcon;
+          };
+          setOpen(!closedFolders.get(room)?.has(node.path));
+          folders.push({ path: node.path, setOpen });
+          toggle.addEventListener("click", () => {
+            const open = children.hidden;
+            setOpen(open);
+            const closed = closedFolders.get(room) || new Set();
+            if (open) closed.delete(node.path);
+            else closed.add(node.path);
+            saveClosedFolders(room, closed);
+          });
+          line.append(toggle, children);
+        } else {
+          const row = element("div", undefined, "file-row");
+          const spacer = element("span", undefined, "file-disclosure");
+          spacer.setAttribute("aria-hidden", "true");
+          const file = button(node.name, () => change({ file: node.item.path }), params.get("file") === node.path);
+          file.classList.add("file");
+          file.title = node.path;
+          row.append(spacer, file);
+          if (node.item.size !== null) row.append(element("span", ` · ${node.item.size.toLocaleString()} B`, "file-size"));
+          line.append(row);
+        }
+        list.append(line);
+      }
+      return list;
+    }
+    if (!group.items.length) parent.append(element("p", "ファイルはありません。", "muted"));
+    parent.append(render(buildFileTree(group.items)));
     if (group.omitted) parent.append(element("p", `… 他 ${group.omitted} 件`, "muted"));
+    if (!folders.length) return null;
+    const controls = element("div", undefined, "file-tree-actions");
+    for (const [text, open] of [["すべて開く", true], ["すべて閉じる", false]]) {
+      controls.append(button(text, () => {
+        const closed = closedFolders.get(room) || new Set();
+        for (const folder of folders) {
+          folder.setOpen(open);
+          if (open) closed.delete(folder.path);
+          else closed.add(folder.path);
+        }
+        saveClosedFolders(room, closed);
+      }));
+    }
+    return controls;
+  }
+  function captureFileBrowser(room) {
+    const browser = content.querySelector(".file-browser");
+    return browser?.dataset.room === room ? { scrollTop: browser.scrollTop } : null;
+  }
+  function restoreFileBrowser(browser, saved) {
+    if (saved) browser.scrollTop = saved.scrollTop;
+  }
+  function saveOtherFilesOpen(room, open) {
+    if (open === !closedOtherFiles.has(room)) return;
+    if (open) closedOtherFiles.delete(room);
+    else closedOtherFiles.add(room);
+    try {
+      localStorage.setItem("workroom-hub-closed-other-files", JSON.stringify([...closedOtherFiles]));
+    } catch { /* 保存できなくてもメモリ上の開閉を保つ */ }
   }
   async function showRoom(room, params, ticket, quiet = false) {
     const label = room.room;
@@ -1257,6 +1410,17 @@
     const previewKey = JSON.stringify([label, tab, path, params.get("view"), item ? [item.kind, item.size, item.modified] : directory ? ["directory"] : null]);
     const headerKey = JSON.stringify([room, tab]);
     const browserKey = JSON.stringify([files, path]);
+    const fileSelection = JSON.stringify([label, params.get("file") || ""]);
+    if (renderedDetail?.fileSelection !== fileSelection) {
+      const closed = closedFolders.get(label);
+      if (closed) {
+        let changed = false;
+        for (const ancestor of ancestorPaths(params.get("file") || "")) changed = closed.delete(ancestor) || changed;
+        if (changed) saveClosedFolders(label, closed);
+      }
+      // 選んだファイルがその他にあれば、そのグループも開いて見せる。
+      if (files?.other.items.some((entry) => entry.path === params.get("file"))) saveOtherFilesOpen(label, true);
+    }
     const header = element("div", undefined, "room-header");
     const heading = element("div", undefined, "room-heading");
     const name = element("h1", label);
@@ -1287,7 +1451,9 @@
       if (files && renderedDetail.browserKey !== browserKey) {
         const browser = fileBrowser(files, label, params, !room.readme && tab === "overview" ? "README.md がないため、成果物を表示します。" : "");
         browser.hidden = filesCollapsed;
+        const saved = captureFileBrowser(label);
         content.querySelector(".file-browser").replaceWith(browser);
+        restoreFileBrowser(browser, saved);
       }
     } else {
       const next = document.createDocumentFragment();
@@ -1298,22 +1464,37 @@
         await preview(pane, label, "README.md", ticket, undefined, quiet);
       } else await showFiles(next, files, label, params, ticket, tab === "overview" ? "README.md がないため、成果物を表示します。" : "", quiet);
       if (ticket !== generation) return;
+      const saved = captureFileBrowser(label);
       content.replaceChildren(next);
+      if (files) restoreFileBrowser(content.querySelector(".file-browser"), saved);
       updateMarkdownTheme(content);
     }
-    renderedDetail = { previewKey, headerKey, browserKey, selection: detailSelection(params) };
+    renderedDetail = { previewKey, headerKey, browserKey, fileSelection, selection: detailSelection(params) };
   }
   function fileBrowser(files, room, params, message) {
     const browser = element("aside", undefined, "file-browser");
     browser.id = "file-browser";
+    browser.dataset.room = room;
     browser.setAttribute("aria-label", "ファイルの一覧");
-    browser.append(element("h2", "主なファイル"));
+    const heading = element("div", undefined, "file-group-heading");
+    heading.append(element("h2", "主なファイル"));
+    browser.append(heading);
+    // 分け方は listing.rs の files と同じ。
+    browser.append(element("p", "outputs・docs・artifacts・out と、直下のファイル", "file-group-note"));
     if (message) browser.append(element("p", message, "muted"));
-    fileList(browser, files.main, room, params);
-    const other = element("details");
-    other.append(element("summary", `その他のファイル（${files.other.items.length} 件）`));
-    other.open = files.other.items.some((item) => item.path === params.get("file"));
-    fileList(other, files.other, room, params);
+    const mainControls = fileList(browser, files.main, room, params);
+    if (mainControls) heading.append(mainControls);
+    const other = element("details", undefined, "other-files");
+    const summary = element("summary", `その他のファイル（${files.other.items.length} 件）`);
+    other.append(summary);
+    other.open = !closedOtherFiles.has(room);
+    other.addEventListener("toggle", () => {
+      if (other.isConnected) saveOtherFilesOpen(room, other.open);
+    });
+    const note = element("p", "README・AGENTS・確認事項の記録・log.md などの管理用のファイルと、ほかのフォルダ", "file-group-note");
+    summary.after(note);
+    const otherControls = fileList(other, files.other, room, params);
+    if (otherControls) note.after(otherControls);
     browser.append(other);
     return browser;
   }
@@ -1385,7 +1566,7 @@
         || sentQuestions.get(group.room)?.has(question.id)
         || (group.room === selectedGroup?.room && question.id === selected?.id)
         || (question.state === "withdrawn" && hasDraft(drafts.get(draftKey(group.room, question.id)))))
-      .map((question) => ({ room: group.room, question, outside: group.outside || !matchesQuestion(question, group.room, params) })));
+      .map((question) => ({ room: group.room, roomLabel: roomPage ? null : shortRoomLabel(group), question, outside: group.outside || !matchesQuestion(question, group.room, params) })));
     visibleQuestions = [...items];
     const matchedCount = items.filter(({ outside }) => !outside).length;
     const withdrawnDraftCount = items.filter(({ room, question }) => question.state === "withdrawn" && !matchesQuestion(question, room, params)).length;
@@ -1397,7 +1578,7 @@
         warnings(body, group);
       }
       items.sort((a, b) => b.question.id.slice(2, 10).localeCompare(a.question.id.slice(2, 10)) || Number(b.question.id.slice(11)) - Number(a.question.id.slice(11)) || a.room.localeCompare(b.room));
-      for (const { question, room, outside } of items) body.append(questionCard(question, room, params, true, outside));
+      for (const { question, room, roomLabel, outside } of items) body.append(questionCard(question, room, params, roomLabel, outside));
     } else {
       for (const group of groups) {
         const questions = items.filter((item) => item.room === group.room);
@@ -1408,14 +1589,14 @@
           body.append(header);
         }
         warnings(body, group);
-        for (const { question, room, outside } of questions) body.append(questionCard(question, room, params, false, outside));
+        for (const { question, room, roomLabel, outside } of questions) body.append(questionCard(question, room, params, roomLabel, outside));
       }
     }
     if (!matchedCount) body.append(element("p", "条件に合う確認事項はありません。", "muted"));
     // ブックマークや後継リンクの対象は、確認事項の条件外でも読めるようにする。
     if (selected && !items.some((item) => item.room === selectedGroup.room && item.question.id === selected.id)) {
       visibleQuestions.push({ room: selectedGroup.room, question: selected });
-      body.append(element("h2", "選択中の確認事項（条件外・件数に含めません）"), questionCard(selected, selectedGroup.room, params, newOrder, true));
+      body.append(element("h2", "選択中の確認事項（条件外・件数に含めません）"), questionCard(selected, selectedGroup.room, params, roomPage ? null : shortRoomLabel(selectedGroup), true));
     } else if (params.get("q") && !selected) {
       body.append(element("p", "選択した確認事項は見つかりません。部屋の条件や同期状態を確認してください。", "muted"));
     }

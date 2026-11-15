@@ -380,7 +380,13 @@ pub fn files(state: &State, path: &Path) -> Value {
     let group = |root_exclude: &[String]| {
         let listing = fsinfo::entries(
             path,
-            &fsinfo::EntriesOptions { depth: 4, max_items: 500, exclude: &state.settings.config.exclude, root_exclude },
+            &fsinfo::EntriesOptions {
+                depth: 4,
+                max_items: 500,
+                files_first: true,
+                exclude: &state.settings.config.exclude,
+                root_exclude,
+            },
         );
         let items: Vec<_> = listing.items.into_iter().filter_map(|entry| {
             let parts: Vec<_> = entry.path.iter().map(|p| p.to_str()).collect::<Option<_>>()?;
