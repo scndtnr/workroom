@@ -126,6 +126,7 @@ p { margin: 4px 0; }
 .file-browser summary { font-size: 12px; }
 .file-group-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 4px; }
 .file-group-heading h2 { margin: 0; }
+.file-group-note { margin: 0 0 4px; font-size: 11px; color: var(--muted); }
 .file-tree-actions { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0; }
 .file-group-heading .file-tree-actions { margin: 0 0 0 auto; }
 .file-tree-actions button { font-size: 10px; padding: 2px 3px; }

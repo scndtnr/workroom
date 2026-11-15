@@ -55,6 +55,12 @@
       }
     }
   } catch { /* 読めないときはすべて開く */ }
+  // 「その他のファイル」は既定で開き、閉じた部屋だけを覚える。
+  const closedOtherFiles = new Set();
+  try {
+    const saved = JSON.parse(localStorage.getItem("workroom-hub-closed-other-files"));
+    if (Array.isArray(saved)) for (const room of saved) if (typeof room === "string" && room) closedOtherFiles.add(room);
+  } catch { /* 読めないときは開く */ }
   let collapsedPane = "";
   try {
     const saved = localStorage.getItem("workroom-hub-collapsed-pane");
@@ -1380,15 +1386,18 @@
   }
   function captureFileBrowser(room) {
     const browser = content.querySelector(".file-browser");
-    return browser?.dataset.room === room ? {
-      scrollTop: browser.scrollTop, otherOpen: browser.querySelector(".other-files").open
-    } : null;
+    return browser?.dataset.room === room ? { scrollTop: browser.scrollTop } : null;
   }
   function restoreFileBrowser(browser, saved) {
-    if (!saved) return;
-    const other = browser.querySelector(".other-files");
-    other.open = other.open || saved.otherOpen;
-    browser.scrollTop = saved.scrollTop;
+    if (saved) browser.scrollTop = saved.scrollTop;
+  }
+  function saveOtherFilesOpen(room, open) {
+    if (open === !closedOtherFiles.has(room)) return;
+    if (open) closedOtherFiles.delete(room);
+    else closedOtherFiles.add(room);
+    try {
+      localStorage.setItem("workroom-hub-closed-other-files", JSON.stringify([...closedOtherFiles]));
+    } catch { /* 保存できなくてもメモリ上の開閉を保つ */ }
   }
   async function showRoom(room, params, ticket, quiet = false) {
     const label = room.room;
@@ -1409,6 +1418,8 @@
         for (const ancestor of ancestorPaths(params.get("file") || "")) changed = closed.delete(ancestor) || changed;
         if (changed) saveClosedFolders(label, closed);
       }
+      // 選んだファイルがその他にあれば、そのグループも開いて見せる。
+      if (files?.other.items.some((entry) => entry.path === params.get("file"))) saveOtherFilesOpen(label, true);
     }
     const header = element("div", undefined, "room-header");
     const heading = element("div", undefined, "room-heading");
@@ -1468,15 +1479,22 @@
     const heading = element("div", undefined, "file-group-heading");
     heading.append(element("h2", "主なファイル"));
     browser.append(heading);
+    // 分け方は listing.rs の files と同じ。
+    browser.append(element("p", "outputs・docs・artifacts・out と、直下のファイル", "file-group-note"));
     if (message) browser.append(element("p", message, "muted"));
     const mainControls = fileList(browser, files.main, room, params);
     if (mainControls) heading.append(mainControls);
     const other = element("details", undefined, "other-files");
     const summary = element("summary", `その他のファイル（${files.other.items.length} 件）`);
     other.append(summary);
-    other.open = files.other.items.some((item) => item.path === params.get("file"));
+    other.open = !closedOtherFiles.has(room);
+    other.addEventListener("toggle", () => {
+      if (other.isConnected) saveOtherFilesOpen(room, other.open);
+    });
+    const note = element("p", "README・AGENTS・確認事項の記録・log.md などの管理用のファイルと、ほかのフォルダ", "file-group-note");
+    summary.after(note);
     const otherControls = fileList(other, files.other, room, params);
-    if (otherControls) summary.after(otherControls);
+    if (otherControls) note.after(otherControls);
     browser.append(other);
     return browser;
   }
