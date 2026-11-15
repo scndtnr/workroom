@@ -83,6 +83,54 @@
     if (className) node.className = className;
     return node;
   }
+  // Rust の Markdown レンダラーと同じ、ASCII の http(s) URL の範囲を返す。
+  function findUrlRanges(text) {
+    const ranges = [];
+    const prefix = /https?:\/\//gi;
+    for (let match; (match = prefix.exec(text)) !== null;) {
+      const start = match.index;
+      if (start > 0 && /[a-z0-9]/i.test(text[start - 1])) continue;
+      const contentStart = start + match[0].length;
+      let end = contentStart;
+      while (end < text.length) {
+        const code = text.charCodeAt(end);
+        if (code < 33 || code > 126 || '<>"`'.includes(text[end])) break;
+        end++;
+      }
+      prefix.lastIndex = end;
+      const balances = [0, 0, 0];
+      for (let index = contentStart; index < end; index++) {
+        const open = "([{".indexOf(text[index]);
+        const close = ")]}".indexOf(text[index]);
+        if (open >= 0) balances[open]++;
+        if (close >= 0) balances[close]--;
+      }
+      while (end > contentStart) {
+        const last = text[end - 1];
+        const close = ")]}".indexOf(last);
+        if (".,;:!?'\"".includes(last)) end--;
+        else if (close >= 0 && balances[close] < 0) { balances[close]++; end--; }
+        else break;
+      }
+      if (end > contentStart) ranges.push({ start, end });
+    }
+    return ranges;
+  }
+  function appendLinkedText(parent, text) {
+    let offset = 0;
+    for (const { start, end } of findUrlRanges(text)) {
+      parent.append(document.createTextNode(text.slice(offset, start)));
+      const url = text.slice(start, end);
+      parent.append(separateTab(url, url));
+      offset = end;
+    }
+    parent.append(document.createTextNode(text.slice(offset)));
+  }
+  function linkedElement(tag, text, className) {
+    const node = element(tag, undefined, className);
+    appendLinkedText(node, text);
+    return node;
+  }
   function button(text, action, selected = false) {
     const node = element("button", text);
     node.type = "button";
@@ -645,7 +693,7 @@
         textarea.focus({ preventScroll: true });
       });
       insert.setAttribute("aria-label", `選択肢 ${index + 1} を入れる`);
-      line.append(element("span", choice + (info.recommend === index + 1 ? "（推奨）" : "")), insert);
+      line.append(linkedElement("span", choice + (info.recommend === index + 1 ? "（推奨）" : "")), insert);
       choices.append(line);
     });
     const send = button("この回答だけ送信", () => {
@@ -705,7 +753,7 @@
     if (outside) heading.append(outsideBadge(sentQuestions.get(room)?.has(question.id)));
     card.append(heading);
     if (params.get("page") === "questions") card.append(questionLink(room, question.id, "部屋のページで開く", true));
-    card.append(element("p", info.question || "質問なし", "question-text"));
+    card.append(linkedElement("p", info.question || "質問なし", "question-text"));
     if (!question.ask) card.append(element("p", "質問なし（写しから表示）", "warning"));
     const at = question.ask?.at || info.asked_at;
     if (info.by || at) card.append(element("p", `起票: ${info.by || ""} ${at || ""}`, "muted"));
@@ -714,26 +762,26 @@
       origin.append(questionLink(room, info.origin), element("span", " の続き"));
       card.append(origin);
     }
-    if (info.background) card.append(element("pre", info.background));
+    if (info.background) card.append(linkedElement("pre", info.background));
     if (question.state === "withdrawn" && info.choices?.length) {
       const choices = element("ol");
-      info.choices.forEach((choice, index) => choices.append(element("li", choice + (info.recommend === index + 1 ? "（推奨）" : ""))));
+      info.choices.forEach((choice, index) => choices.append(linkedElement("li", choice + (info.recommend === index + 1 ? "（推奨）" : ""))));
       card.append(choices);
     }
     for (const answer of question.answers) {
       const reflected = answer.n <= question.reflected_upto;
       const block = element("div", undefined, "answer" + (reflected ? " reflected" : ""));
       block.append(element("p", `回答 ${answer.n} · ${answer.at} · ${answer.kind === "not_needed" ? "回答不要" : "回答"} · ${reflected ? "反映済み" : "未反映"}`, "muted"));
-      block.append(element("pre", answer.text || "（理由なし）"));
+      block.append(linkedElement("pre", answer.text || "（理由なし）"));
       card.append(block);
     }
     for (const event of question.done) {
-      card.append(element("p", `反映先: ${event.to}（${event.at}、回答 ${event.upto} まで）`));
-      if (event.chat) card.append(element("pre", "会話での回答: " + event.chat));
+      card.append(linkedElement("p", `反映先: ${event.to}（${event.at}、回答 ${event.upto} まで）`, "linked-text"));
+      if (event.chat) card.append(linkedElement("pre", "会話での回答: " + event.chat));
     }
     const withdrawal = question.withdrawals.at(-1);
     if (withdrawal) {
-      card.append(element("pre", "取り下げの理由: " + withdrawal.reason));
+      card.append(linkedElement("pre", "取り下げの理由: " + withdrawal.reason));
       if (withdrawal.successor) {
         const successor = element("p", "後継: ");
         successor.append(questionLink(room, withdrawal.successor));
@@ -779,7 +827,7 @@
       text += decoder.decode();
     } finally { await reader.cancel(); }
     if (ticket !== generation) return;
-    parent.append(element("pre", text));
+    parent.append(linkedElement("pre", text));
     if (size >= limit) parent.append(element("p", "先頭 1 MiB までを表示しています。", "muted"));
   }
   async function preview(parent, room, path, ticket, fileToggle) {
@@ -794,8 +842,13 @@
     const toolbar = element("div", undefined, "toolbar");
     toolbar.append(separateTab(hubUrl(room, path)), separateTab(url, "ファイルだけを開く"));
     const markdown = isMarkdown(path);
+    const extension = path.split(".").at(-1).toLowerCase();
+    const textAvailable = markdown || ["html", "htm", "svg"].includes(extension);
     const textMode = state().get("view") === "text";
-    if (markdown) {
+    if (textAvailable) {
+      const rawUrl = new URL(url);
+      rawUrl.searchParams.set("raw", "1");
+      toolbar.append(separateTab(rawUrl, "テキストで開く"));
       toolbar.append(
         button("プレビュー", () => change({ ...fileSelection(room, path), view: "preview" }), !textMode),
         button("テキスト", () => change({ ...fileSelection(room, path), view: "text" }), textMode)
@@ -806,8 +859,7 @@
     const body = element("div", undefined, "preview-body");
     panel.append(body);
     parent.append(panel);
-    const extension = path.split(".").at(-1).toLowerCase();
-    if ((markdown && !textMode) || ["html", "htm", "pdf"].includes(extension)) {
+    if (((markdown || ["html", "htm"].includes(extension)) && !textMode) || extension === "pdf") {
       body.classList.add("framed");
       const frame = element("iframe");
       frame.title = path;
@@ -815,7 +867,7 @@
       if (extension !== "pdf") frame.setAttribute("sandbox", markdown ? "allow-popups allow-popups-to-escape-sandbox" : "allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox");
       frame.src = url;
       body.append(frame);
-    } else if (["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svg"].includes(extension)) {
+    } else if (["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico"].includes(extension) || (extension === "svg" && !textMode)) {
       const image = element("img");
       image.alt = path;
       image.src = url;

@@ -1,0 +1,355 @@
+{
+  "cases": [
+    {
+      "body": "<p><strong><a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/x</a></strong>を参照</p>\n",
+      "input": "**https://example.com/x**を参照"
+    },
+    {
+      "body": "<p>文<strong><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></strong> 文</p>\n",
+      "input": "文**https://a.example/x** 文"
+    },
+    {
+      "body": "<p>詳しくは<strong><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></strong>。</p>\n",
+      "input": "詳しくは**https://a.example/x**。"
+    },
+    {
+      "body": "<p>文<em><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></em>文</p>\n",
+      "input": "文*https://a.example/x*文"
+    },
+    {
+      "body": "<p>文<del><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></del>文</p>\n",
+      "input": "文~~https://a.example/x~~文"
+    },
+    {
+      "body": "<p><strong>x <a href=\"https://a.example/a\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/a</a></strong>b</p>\n",
+      "input": "**x https://a.example/a**b"
+    },
+    {
+      "body": "<p><del><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></del>y</p>\n",
+      "input": "~~https://a.example/x~~y"
+    },
+    {
+      "body": "<p><strong>参考：<a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/x</a></strong></p>\n",
+      "input": "**参考：https://example.com/x**"
+    },
+    {
+      "body": "<p><strong><a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/x</a>.</strong></p>\n",
+      "input": "**https://example.com/x.**"
+    },
+    {
+      "body": "<p><strong>(<a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/x</a>)</strong></p>\n",
+      "input": "**(https://example.com/x)**"
+    },
+    {
+      "body": "<p><em><strong><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></strong></em></p>\n",
+      "input": "***https://a.example/x***"
+    },
+    {
+      "body": "<p><em>a <strong><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></strong> b</em></p>\n",
+      "input": "*a **https://a.example/x** b*"
+    },
+    {
+      "body": "<p><em><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></em></p>\n",
+      "input": "_https://a.example/x_"
+    },
+    {
+      "body": "<p><del><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></del></p>\n",
+      "input": "~~https://a.example/x~~"
+    },
+    {
+      "body": "<p><del><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></del></p>\n",
+      "input": "~https://a.example/x~"
+    },
+    {
+      "body": "<p><strong>参考：<a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/x</a></strong>です</p>\n",
+      "input": "**参考：https://example.com/x**です"
+    },
+    {
+      "body": "<p><em><a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/x</a></em>の</p>\n",
+      "input": "*https://example.com/x*の"
+    },
+    {
+      "body": "<p><del><a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/x</a></del>削除</p>\n",
+      "input": "~~https://example.com/x~~削除"
+    },
+    {
+      "body": "<p><strong><a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/x</a></strong>、次</p>\n",
+      "input": "**https://example.com/x**、次"
+    },
+    {
+      "body": "<p>__<a href=\"https://example.com/x__\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/x__</a>を</p>\n",
+      "input": "__https://example.com/x__を"
+    },
+    {
+      "body": "<p><a href=\"https://example.com/a.\" title=\"\" target=\"_blank\" rel=\"noopener noreferrer\">x</a></p>\n",
+      "input": "[x]: https://example.com/a.\n\n[x]"
+    },
+    {
+      "body": "<p><a href=\"https://example.com/a\" title=\"t https://example.com/t\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/l</a></p>\n",
+      "input": "[https://example.com/l]: https://example.com/a \"t https://example.com/t\"\n\n[https://example.com/l]"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/a.\" title=\"https://a.example/t\" target=\"_blank\" rel=\"noopener noreferrer\">x</a></p>\n",
+      "input": "[x]:\nhttps://a.example/a.\n'https://a.example/t'\n\n[x]"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/a.\" title=\"https://a.example/t\" target=\"_blank\" rel=\"noopener noreferrer\">x</a></p>\n",
+      "input": "   [x]: https://a.example/a. (https://a.example/t)\n\n[x]"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/a b\" title=\"t\" target=\"_blank\" rel=\"noopener noreferrer\">x</a></p>\n",
+      "input": "[x]: <https://a.example/a b> \"t\"\n\n[x]"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/a\" title=\"\" target=\"_blank\" rel=\"noopener noreferrer\">x</a> <a href=\"https://a.example/after\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/after</a></p>\n",
+      "input": "[x]: <https://a.example/a>\n\n[x] https://a.example/after"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/a\" title=\"\" target=\"_blank\" rel=\"noopener noreferrer\">x</a></p>\n",
+      "input": "[x]: https://a.example/a\n[x]: https://b.example/b.\n\n[x]"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/a\" title=\"\" target=\"_blank\" rel=\"noopener noreferrer\">x</a></p>\n",
+      "input": "[X]: https://a.example/a\n[x]: https://b.example/b\n\n[x]"
+    },
+    {
+      "body": "<blockquote>\n<p><a href=\"https://a.example/a.\" title=\"\" target=\"_blank\" rel=\"noopener noreferrer\">x</a></p>\n</blockquote>\n",
+      "input": "> [x]: https://a.example/a.\n>\n> [x]"
+    },
+    {
+      "body": "<ul>\n<li>\n<p><a href=\"https://a.example/a.\" title=\"\" target=\"_blank\" rel=\"noopener noreferrer\">x</a></p>\n</li>\n</ul>\n",
+      "input": "- [x]: https://a.example/a.\n\n  [x]"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/a\" title=\"t\nhttps://a.example/t2\" target=\"_blank\" rel=\"noopener noreferrer\">x</a></p>\n",
+      "input": "[x]: https://a.example/a \"t\nhttps://a.example/t2\"\n\n[x]"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/a\" title=\"\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/l 2</a></p>\n",
+      "input": "[https://a.example/l\n2]: https://a.example/a\n\n[https://a.example/l 2]"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/notdef\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/notdef</a></p>\n",
+      "input": "[x]: https://a.example/a\nhttps://a.example/notdef"
+    },
+    {
+      "body": "<p>[x]: <a href=\"https://a.example/a\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/a</a> &quot;title&quot; <a href=\"https://a.example/junk\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/junk</a></p>\n<p>[x]</p>\n",
+      "input": "[x]: https://a.example/a \"title\" https://a.example/junk\n\n[x]"
+    },
+    {
+      "body": "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody>\n<tr><td><a href=\"https://example.com/a|b\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/a|b</a></td><td>c</td></tr>\n</tbody></table>\n",
+      "input": "|a|b|\n|-|-|\n| https://example.com/a\\|b | c |"
+    },
+    {
+      "body": "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody>\n<tr><td><a href=\"https://example.com/a|b\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/a|b</a></td><td>c</td></tr>\n</tbody></table>\n",
+      "input": "|a|b|\n|-|-|\n| https://example.com/a\\\\|b | c |"
+    },
+    {
+      "body": "<table><thead><tr><th style=\"text-align: left\"><a href=\"https://a.example/h\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/h</a></th><th style=\"text-align: right\">b</th></tr></thead><tbody>\n<tr><td style=\"text-align: left\"><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></td><td style=\"text-align: right\"><a href=\"https://a.example/y\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/y</a></td></tr>\n</tbody></table>\n",
+      "input": "| https://a.example/h | b |\n|:--|--:|\n|https://a.example/x|https://a.example/y|"
+    },
+    {
+      "body": "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody>\n<tr><td><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></td><td><a href=\"https://a.example/y\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/y</a></td></tr>\n</tbody></table>\n",
+      "input": "a | b\n--|--\nhttps://a.example/x | https://a.example/y"
+    },
+    {
+      "body": "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody>\n<tr><td>`<a href=\"https://a.example/c\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/c</a></td><td>d`</td></tr>\n</tbody></table>\n",
+      "input": "|a|b|\n|-|-|\n| `https://a.example/c|d` | https://a.example/x\\|\\|y |"
+    },
+    {
+      "body": "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody>\n<tr><td><strong><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></strong></td><td><del><a href=\"https://a.example/y\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/y</a></del></td></tr>\n</tbody></table>\n",
+      "input": "|a|b|\n|-|-|\n| **https://a.example/x** | ~~https://a.example/y~~ |"
+    },
+    {
+      "body": "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody>\n<tr><td>[l](<a href=\"https://a.example/a\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/a</a></td><td>b)</td></tr>\n</tbody></table>\n",
+      "input": "|a|b|\n|-|-|\n| [l](https://a.example/a|b) | x |"
+    },
+    {
+      "body": "<table><thead><tr><th>a</th></tr></thead><tbody>\n<tr><td><a href=\"https://a.example/x\\\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x\\</a></td></tr>\n</tbody></table>\n",
+      "input": "|a|\n|-|\n| https://a.example/x\\ |"
+    },
+    {
+      "body": "<p><a href=\"https://example.com/a\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/a</a><br />\nnext</p>\n",
+      "input": "https://example.com/a\\\nnext"
+    },
+    {
+      "body": "<p><a href=\"https://example.com/a\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/a</a><br />\nnext</p>\n",
+      "input": "https://example.com/a\\\r\nnext"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a><br />\nnext</p>\n",
+      "input": "https://a.example/x  \nnext"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a><br />\nnext</p>\n",
+      "input": "https://a.example/x   \nnext"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/x\\\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x\\</a></p>\n",
+      "input": "https://a.example/x\\"
+    },
+    {
+      "body": "<p><strong><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a><br />\ny</strong></p>\n",
+      "input": "**https://a.example/x\\\ny**"
+    },
+    {
+      "body": "<ul>\n<li><a href=\"https://a.example/a\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/a</a></li>\n<li><strong><a href=\"https://a.example/b\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/b</a></strong>\n<blockquote>\n<p><a href=\"https://a.example/q\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/q</a></p>\n</blockquote>\n</li>\n</ul>\n",
+      "input": "- https://a.example/a\n- **https://a.example/b**\n  > https://a.example/q"
+    },
+    {
+      "body": "<blockquote>\n<p><strong>引用 <a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a></strong>\n続き <a href=\"https://a.example/y\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/y</a></p>\n</blockquote>\n",
+      "input": "> **引用 https://a.example/x**\n> 続き https://a.example/y"
+    },
+    {
+      "body": "<p>本文<sup class=\"footnote-reference\"><a href=\"#1\">1</a></sup></p>\n<div class=\"footnote-definition\" id=\"1\"><sup class=\"footnote-definition-label\">1</sup>\n<p>脚注 <a href=\"https://a.example/f\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/f</a> と <strong><a href=\"https://a.example/h\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/h</a></strong></p>\n</div>\n",
+      "input": "本文[^1]\n\n[^1]: 脚注 https://a.example/f と **https://a.example/h**"
+    },
+    {
+      "body": "<pre><code>https://a.example/c\n</code></pre>\n<pre><code>https://a.example/i\n</code></pre>\n<p><code>https://a.example/j</code></p>\n<ul>\n<li>\n<pre><code>https://a.example/k\n</code></pre>\n</li>\n</ul>\n",
+      "input": "```\nhttps://a.example/c\n```\n\n    https://a.example/i\n\n`https://a.example/j`\n\n- ```\n  https://a.example/k\n  ```"
+    },
+    {
+      "body": "<h1>見出し <a href=\"https://a.example/h\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/h</a></h1>\n<h2>見出し2 <a href=\"https://a.example/s\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/s</a></h2>\n",
+      "input": "# 見出し https://a.example/h\n\n見出し2 https://a.example/s\n---"
+    },
+    {
+      "body": "<ul>\n<li><input disabled=\"\" type=\"checkbox\"/>\n<a href=\"https://a.example/task\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/task</a></li>\n</ul>\n",
+      "input": "- [ ] https://a.example/task"
+    },
+    {
+      "body": "<p>参考：<a href=\"https://example.com/a?b=1&amp;c=2\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/a?b=1&amp;c=2</a>。</p>\n",
+      "input": "参考：https://example.com/a?b=1&c=2。"
+    },
+    {
+      "body": "<p><a href=\"https://example.com/\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/</a>を参照</p>\n",
+      "input": "https://example.com/を参照"
+    },
+    {
+      "body": "<p>（<a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/x</a>）</p>\n",
+      "input": "（https://example.com/x）"
+    },
+    {
+      "body": "<p>(see <a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/x</a>).</p>\n",
+      "input": "(see https://example.com/x)."
+    },
+    {
+      "body": "<p><a href=\"https://ja.wikipedia.org/wiki/Foo_(bar)\" target=\"_blank\" rel=\"noopener noreferrer\">https://ja.wikipedia.org/wiki/Foo_(bar)</a></p>\n",
+      "input": "https://ja.wikipedia.org/wiki/Foo_(bar)"
+    },
+    {
+      "body": "<p>URL: <a href=\"https://example.com/path\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/path</a>, next</p>\n",
+      "input": "URL: https://example.com/path, next"
+    },
+    {
+      "body": "<p>&quot;<a href=\"https://example.com/q\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/q</a>&quot;</p>\n",
+      "input": "\"https://example.com/q\""
+    },
+    {
+      "body": "<p><a href=\"HTTPS://EXAMPLE.COM/\" target=\"_blank\" rel=\"noopener noreferrer\">HTTPS://EXAMPLE.COM/</a></p>\n",
+      "input": "HTTPS://EXAMPLE.COM/"
+    },
+    {
+      "body": "<p>xhttps://example.com/</p>\n",
+      "input": "xhttps://example.com/"
+    },
+    {
+      "body": "<p>https://</p>\n",
+      "input": "https://"
+    },
+    {
+      "body": "<p>ftp://example.com/</p>\n",
+      "input": "ftp://example.com/"
+    },
+    {
+      "body": "<p>javascript:alert(1)</p>\n",
+      "input": "javascript:alert(1)"
+    },
+    {
+      "body": "<p>C:\\work\\a.md</p>\n",
+      "input": "C:\\work\\a.md"
+    },
+    {
+      "body": "<p>a <a href=\"https://a.example/\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/</a> b <a href=\"http://b.example/c\" target=\"_blank\" rel=\"noopener noreferrer\">http://b.example/c</a></p>\n",
+      "input": "a https://a.example/ b http://b.example/c"
+    },
+    {
+      "body": "<p><a href=\"https://example.com/a[b]{c}(d)\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/a[b]{c}(d)</a>)]}.;,!?:&#39;</p>\n",
+      "input": "https://example.com/a[b]{c}(d))]}.;,!?:'"
+    },
+    {
+      "body": "<p><a href=\"https://example.com/%E6%97%A5%E6%9C%AC\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/%E6%97%A5%E6%9C%AC</a></p>\n",
+      "input": "https://example.com/%E6%97%A5%E6%9C%AC"
+    },
+    {
+      "body": "<p><a href=\"https://example.com/a\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/a</a>\t次\n<a href=\"http://example.com/b\" target=\"_blank\" rel=\"noopener noreferrer\">http://example.com/b</a></p>\n",
+      "input": "https://example.com/a\t次\nhttp://example.com/b"
+    },
+    {
+      "body": "<p><a href=\"https://example.com/a\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/a</a>&lt; <a href=\"https://example.com/b\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/b</a>&gt; <a href=\"https://example.com/c\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/c</a>`</p>\n",
+      "input": "https://example.com/a< https://example.com/b> https://example.com/c`"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/&#39;onmouseover=&#39;alert(1)\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/&#39;onmouseover=&#39;alert(1)</a>&#39;</p>\n",
+      "input": "https://a.example/'onmouseover='alert(1)'"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a>&quot;onclick=&#39;y</p>\n",
+      "input": "https://a.example/x&quot;onclick=&#39;y"
+    },
+    {
+      "body": "<p>&lt;a title=x <a href=\"https://a.example/y\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/y</a></p>\n&lt;script&gt;alert(1)&lt;/script&gt;",
+      "input": "<a title=x https://a.example/y\n<script>alert(1)</script>"
+    },
+    {
+      "body": "<p>&lt;a title=\"x https://a.example/y\"&gt;z&lt;/a&gt; <a href=\"https://a.example/z\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/z</a></p>\n",
+      "input": "<a title=\"x https://a.example/y\">z</a> https://a.example/z"
+    },
+    {
+      "body": "&lt;!-- https://a.example/c\n--&gt; https://a.example/after",
+      "input": "<!-- https://a.example/c\n--> https://a.example/after"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/x\" title=\"\" target=\"_blank\" rel=\"noopener noreferrer\">a</a> <a href=\"https://a.example/\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/</a>&lt;script&gt;</p>\n",
+      "input": "[a](<https://a.example/x>) https://a.example/\\<script>"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a>]] y <strong><a href=\"https://a.example/b\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/b</a></strong>&lt;script&gt;</p>\n",
+      "input": "https://a.example/x]] [y](javascript:alert(1)) **https://a.example/b**<script>"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/x\" title=\"\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a><a href=\"https://a.example/y\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/y</a></p>\n",
+      "input": "<https://a.example/x>https://a.example/y"
+    },
+    {
+      "body": "<p><a href=\"https://a.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x</a>&gt;<a href=\"https://a.example/y\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/y</a>&lt;</p>\n",
+      "input": "https://a.example/x>https://a.example/y<"
+    },
+    {
+      "body": "<p>&lt;<a href=\"https://example.com/a\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/a</a>&gt;</p>\n",
+      "input": "\\<https://example.com/a>"
+    },
+    {
+      "body": "<p>&lt;<a href=\"https://example.com/unclosed\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/unclosed</a></p>\n",
+      "input": "<https://example.com/unclosed"
+    },
+    {
+      "body": "<p>文 &lt;b&gt;<a href=\"https://example.com/\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/</a>&lt;/b&gt; &lt;script&gt;<a href=\"https://example.com/s\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/s</a>&lt;/script&gt;</p>\n",
+      "input": "文 <b>https://example.com/</b> <script>https://example.com/s</script>"
+    },
+    {
+      "body": "<p>参照<sup class=\"footnote-reference\"><a href=\"#https://example.com/n\">1</a></sup></p>\n<div class=\"footnote-definition\" id=\"https://example.com/n\"><sup class=\"footnote-definition-label\">1</sup>\n<p>脚注</p>\n</div>\n",
+      "input": "参照[^https://example.com/n]\n\n[^https://example.com/n]: 脚注"
+    },
+    {
+      "body": "<p><img src=\"image.svg\" alt=\"https://example.com/alt\" /> <a href=\"https://example.com/destination\" title=\"\" target=\"_blank\" rel=\"noopener noreferrer\">https://example.com/label</a></p>\n",
+      "input": "![https://example.com/alt](image.svg) [https://example.com/label](https://example.com/destination)"
+    },
+    {
+      "body": "<p><em>see <a href=\"https://a.example/x*\" target=\"_blank\" rel=\"noopener noreferrer\">https://a.example/x*</a></em></p>\n",
+      "input": "*see https://a.example/x\\**"
+    }
+  ],
+  "prefix": "<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>workroom Markdown</title><style>:root { color-scheme: light dark; --bg: #fff; --fg: #202735; --muted: #657083; --line: #dce1e9; --code: #f3f5f8; --link: #1d5fc1; }\n@media (prefers-color-scheme: dark) {\n  :root:not(.light) { --bg: #151a23; --fg: #e0e7f0; --muted: #a6b2c3; --line: #364151; --code: #212a37; --link: #8cb9ff; }\n}\n:root.dark { color-scheme: dark; --bg: #151a23; --fg: #e0e7f0; --muted: #a6b2c3; --line: #364151; --code: #212a37; --link: #8cb9ff; }\n:root.light { color-scheme: light; }\nbody { margin: 0; padding: 24px; background: var(--bg); color: var(--fg); font: 16px/1.75 system-ui, sans-serif; overflow-wrap: anywhere; }\nmain { max-width: 960px; margin: auto; }\na { color: var(--link); }\n.hub-link { max-width: 960px; margin: 0 auto 16px; padding-bottom: 10px; border-bottom: 1px solid var(--line); font-size: 12px; }\nh1, h2, h3 { line-height: 1.4; }\nh1, h2 { border-bottom: 1px solid var(--line); padding-bottom: .3em; }\npre, code { background: var(--code); border-radius: 4px; font-family: ui-monospace, monospace; }\npre { padding: 16px; overflow: auto; }\ncode { padding: .1em .3em; }\npre code { padding: 0; }\nimg { max-width: 100%; height: auto; }\ntable { border-collapse: collapse; display: block; overflow: auto; }\nth, td { border: 1px solid var(--line); padding: 6px 12px; }\nblockquote { border-left: 3px solid var(--line); margin-left: 0; padding-left: 16px; color: var(--muted); }\n.notice { border: 1px solid var(--line); padding: 12px; }\n@media print { body { padding: 0; background: white; color: black; } }\n</style></head><body><main>",
+  "source": "ba1e77e",
+  "suffix": "</main></body></html>"
+}

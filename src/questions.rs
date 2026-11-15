@@ -298,8 +298,8 @@ pub fn read(dir: &Path) -> Result<Questions> {
                 let id = event.id.clone();
                 match &event.kind {
                     EventKind::Ask(ask) => {
-                        if ask.question.trim().is_empty() || ask.question.contains(['\r', '\n']) {
-                            out.warn(name, line, "質問は空でない1行で指定してください");
+                        if ask.question.trim().is_empty() {
+                            out.warn(name, line, "質問は空にできません");
                             continue;
                         }
                         let item = out.items.entry(id.clone()).or_insert_with(|| Question::new(id));
@@ -554,9 +554,7 @@ pub fn answer(dir: &Path, answers: Vec<AnswerRequest>) -> std::result::Result<Ve
 }
 
 pub fn ask(dir: &Path, date: NaiveDate, mut ask: Ask, by: Option<String>) -> Result<((String, usize), Vec<Warning>)> {
-    if ask.question.contains(['\r', '\n']) {
-        bail!("質問は改行を含めず1行で指定してください");
-    }
+    ask.question = ask.question.replace("\r\n", "\n").replace('\r', "\n");
     ask.question = ask.question.trim().into();
     if ask.question.is_empty() || ask.question.chars().count() > 1000 {
         bail!("質問は1文字以上1000文字以内で指定してください");

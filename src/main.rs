@@ -140,7 +140,7 @@ struct QArgs {
 enum QCmd {
     /// ユーザーへの質問を起票し、ID を出力する
     Ask {
-        /// 質問（1行、1000文字以内）
+        /// 質問（1000文字以内。改行可。詳細は --background に）
         question: String,
         /// 質問の背景（複数行可）
         #[arg(long, value_name = "文")]
@@ -533,7 +533,7 @@ fn run_q(args: QArgs) -> Result<()> {
                 } else {
                     println!("# 確認事項：反映が要る回答（{}）\n", room.label());
                     for q in pending {
-                        println!("## {} {}", q.id, q.content().question);
+                        print_q_heading(q);
                         if q.ask.is_none() {
                             println!("- 質問なし（写しから表示）");
                         }
@@ -617,6 +617,15 @@ fn print_q_text(text: &str) {
     }
 }
 
+fn print_q_heading(q: &questions::Question) {
+    // 手で書いた JSONL の質問は ask でそろえていないので、表示の前に改行をそろえる。
+    let question = q.content().question.replace("\r\n", "\n").replace('\r', "\n");
+    let question = question.trim();
+    let (first, rest) = question.split_once('\n').unwrap_or((question, ""));
+    println!("## {} {first}", q.id);
+    print_q_text(rest);
+}
+
 fn print_q_answer(answer: &questions::Answer) {
     if answer.kind == questions::AnswerKind::NotNeeded {
         if answer.text.is_empty() {
@@ -632,7 +641,8 @@ fn print_q_answer(answer: &questions::Answer) {
 }
 
 fn print_q_question(q: &questions::Question) {
-    println!("## {} {}\n- 状態: {}", q.id, q.content().question, q.state.label());
+    print_q_heading(q);
+    println!("- 状態: {}", q.state.label());
     if q.ask.is_none() {
         println!("- 質問なし（写しから表示）");
     }

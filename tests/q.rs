@@ -123,6 +123,119 @@ fn ask_outputs_only_id_and_stores_fields_with_local_timestamp() {
 }
 
 #[test]
+fn ask_normalizes_question_newlines_and_preserves_literal_backslashes_and_background() {
+    let env = Env::new();
+    for (input, expected) in [
+        ("改行\nあり", "改行\nあり"),
+        ("\n質問\n", "質問"),
+        ("\r\n  質問\r\n次\r終  \r\n", "質問\n次\n終"),
+        (r"C:\new\notes", r"C:\new\notes"),
+    ] {
+        let output = env.run(&["ask", input, "--background", "背景\r\n2行目\r3行目"]);
+        success(&output);
+        let events = env.events();
+        let event = events.last().unwrap();
+        assert_eq!(event["question"], expected);
+        assert_eq!(event["background"], "背景\r\n2行目\r3行目");
+    }
+    let source = fs::read_to_string(env.room.join("QUESTIONS.jsonl")).unwrap();
+    assert_eq!(source.lines().count(), 4);
+    assert!(source.contains(r#""question":"改行\nあり""#));
+    assert!(source.contains(r#""question":"質問\n次\n終""#));
+    assert!(!source.contains('\r'));
+}
+
+#[test]
+fn question_length_counts_normalized_newlines_as_one_character() {
+    let env = Env::new();
+    let question = format!("{}\r\nい", "あ".repeat(998));
+    let id = env.ask(&format!("\r\n {question} \r\n"));
+    assert_eq!(env.events()[0]["question"].as_str().unwrap().chars().count(), 1000);
+    let before = fs::read(env.room.join("QUESTIONS.jsonl")).unwrap();
+    let out = env.run(&["ask", &format!("{question}い")]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("1000文字以内"));
+    assert_eq!(fs::read(env.room.join("QUESTIONS.jsonl")).unwrap(), before);
+    assert_eq!(parsed(&env.run(&["show", "--json"]))["questions"][0]["id"], id);
+}
+
+#[test]
+fn multiline_questions_and_answer_snapshots_indent_continuation_lines_in_show_and_pending() {
+    let env = Env::new();
+    let question = "出力形式はどうしますか\n\n参考の条件を確認してください";
+    let id = env.ask(question);
+    env.answer(&id, "answer", "表でよい");
+    for orphan in [false, true] {
+        if orphan {
+            fs::remove_file(env.room.join("QUESTIONS.jsonl")).unwrap();
+        }
+        for command in ["show", "pending"] {
+            let out = env.run(&[command]);
+            success(&out);
+            assert!(stderr(&out).is_empty());
+            assert!(
+                stdout(&out).contains(&format!("## {id} 出力形式はどうしますか\n  \n  参考の条件を確認してください\n"))
+            );
+            let out = env.run(&[command, "--json"]);
+            let data = parsed(&out);
+            assert_eq!(data["warnings"], json!([]));
+            let stored = if command == "pending" {
+                &data["pending"][0]["question"]
+            } else if orphan {
+                &data["questions"][0]["answers"][0]["question"]["question"]
+            } else {
+                &data["questions"][0]["ask"]["question"]
+            };
+            assert_eq!(stored, question);
+            assert!(stdout(&out).contains(r"\n\n"));
+        }
+    }
+}
+
+#[test]
+fn handwritten_multiline_ask_is_read_without_warnings() {
+    let env = Env::new();
+    let question = "手書きの質問\n2行目";
+    let event = json!({"v":1,"type":"ask","id":"Q-20261106-01","at":"2026-11-06T10:00:00+09:00","question":question});
+    fs::write(env.room.join("QUESTIONS.jsonl"), format!("{event}\n")).unwrap();
+    let before = fs::read(env.room.join("QUESTIONS.jsonl")).unwrap();
+    for command in ["show", "pending"] {
+        let out = env.run(&[command, "--json"]);
+        let data = parsed(&out);
+        assert!(stderr(&out).is_empty());
+        assert_eq!(data["warnings"], json!([]));
+        if command == "show" {
+            assert_eq!(data["questions"][0]["ask"]["question"], question);
+        } else {
+            assert_eq!(data["unanswered"], json!(["Q-20261106-01"]));
+        }
+    }
+    assert_eq!(fs::read(env.room.join("QUESTIONS.jsonl")).unwrap(), before);
+}
+
+#[test]
+fn handwritten_questions_with_cr_or_leading_newlines_are_normalized_for_terminal_headings() {
+    let env = Env::new();
+    let events: Vec<_> = ["\n\r\n 先頭が改行の質問\r\n2行目 ", "上書き前\r単独の CR\r\n3行目"]
+        .iter()
+        .enumerate()
+        .map(|(i, question)| {
+            json!({"v":1,"type":"ask","id":format!("Q-20261106-0{}", i + 1),"at":"2026-11-06T10:00:00+09:00","question":question})
+                .to_string()
+        })
+        .collect();
+    fs::write(env.room.join("QUESTIONS.jsonl"), events.join("\n") + "\n").unwrap();
+    let before = fs::read(env.room.join("QUESTIONS.jsonl")).unwrap();
+    let out = env.run(&["show"]);
+    success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("## Q-20261106-01 先頭が改行の質問\n  2行目\n- 状態"), "{text}");
+    assert!(text.contains("## Q-20261106-02 上書き前\n  単独の CR\n  3行目\n- 状態"), "{text}");
+    assert!(!text.contains('\r'));
+    assert_eq!(fs::read(env.room.join("QUESTIONS.jsonl")).unwrap(), before);
+}
+
+#[test]
 fn parallel_ask_processes_get_distinct_consecutive_ids() {
     let env = Env::new();
     let children: Vec<_> = (0..8)
@@ -328,9 +441,8 @@ fn unreadable_settings_use_outermost_cwd_but_valid_other_root_is_rejected() {
 fn invalid_values_and_missing_ids_are_runtime_errors_but_argument_errors_are_two() {
     let env = Env::new();
     for args in [
-        vec!["ask", "改行\nあり"],
-        vec!["ask", "\n質問\n"],
         vec!["ask", " "],
+        vec!["ask", "\r\n \n"],
         vec!["ask", "質問", "--recommend", "1"],
         vec!["ask", "質問", "--choice", "選択肢", "--recommend", "0"],
         vec!["ask", "質問", "--origin", "Q-20261106-99"],
