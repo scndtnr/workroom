@@ -354,7 +354,7 @@ fn pending_preserves_new_answers_between_reading_and_done() {
     success(&out);
     assert!(stdout(&out).contains("# 確認事項：反映が要る回答（EXAMPLE/2026-11-03-調査）"));
     assert!(stdout(&out).contains("  # 見出し\n  - 項目"));
-    assert!(stdout(&out).contains(&format!("workroom q done {id} --upto 1 --to \"<反映先>\"")));
+    assert!(stdout(&out).contains(&format!("workroom q done {id} --upto 1 --to '<反映先>'")));
     env.answer(&id, "answer", "後から届いた回答");
     let before = fs::read(env.room.join("ANSWERS.jsonl")).unwrap();
     success(&env.run(&["done", &id, "--upto", "1", "--to", "README"]));

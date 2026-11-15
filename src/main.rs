@@ -606,7 +606,7 @@ fn run_q(args: QArgs) -> Result<()> {
                         let (action, to) = if not_needed {
                             ("確認したら", "")
                         } else {
-                            ("反映したら", " --to \"<反映先>\"")
+                            ("反映したら", " --to '<反映先>'")
                         };
                         if q.ask.is_some() {
                             println!(
