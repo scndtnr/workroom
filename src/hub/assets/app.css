@@ -165,8 +165,9 @@ pre { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/
 .answer-form label > span { display: block; margin: 4px 0; font-weight: 600; }
 .answer-form textarea { display: block; width: 100%; min-height: 6em; resize: vertical; padding: 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--fg); background: var(--panel); }
 .answer-form.not-needed textarea { border-color: var(--draft); }
-/* 下書きのある入力欄は 1.5px の紫の枠と薄い紫の地で示す（padding を 0.5px 減らして大きさを変えない）。 */
-.answer-form.has-draft textarea { border: 1.5px solid var(--draft); padding: 5.5px; background: var(--draft-bg); }
+/* 下書きのある入力欄は紫の枠と薄い紫の地で示す。枠は 1px に内側の 0.5px の影を重ねて 1.5px 相当にする
+   （枠の太さは端末のピクセルに切り下げられるが、影は切り下げられないので、どの倍率でも太く見える。大きさは変えない）。 */
+.answer-form.has-draft textarea { border-color: var(--draft); box-shadow: inset 0 0 0 0.5px var(--draft); background: var(--draft-bg); }
 /* フォーカスの枠を入力欄の枠の外側にすき間なく重ね、下書きの紫の枠と地は残す。 */
 .answer-form textarea:focus-visible { outline-offset: 0; }
 .answer-choices { list-style: none; margin: 8px 0 0; padding: 0; counter-reset: choice; }
