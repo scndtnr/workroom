@@ -679,19 +679,35 @@
     badge.hidden = !count;
     return badge;
   }
-  function roomAnswers(room) {
-    return (questionGroups.find((group) => group.room === room)?.questions || [])
+  // 表示・送信範囲の計算には、DOM や保存先の鍵に依存しない写しを渡す。
+  function currentQuestionDrafts() {
+    return new Map(questionGroups.map(({ room, questions }) => [room,
+      new Map(questions.map(({ id }) => [id, drafts.get(draftKey(room, id))]))]));
+  }
+  function sendableAnswers(questions, roomDrafts) {
+    return questions
       .filter((question) => question.state !== "withdrawn")
       .flatMap((question) => {
-        const draft = drafts.get(draftKey(room, question.id));
+        const draft = roomDrafts?.get(question.id);
         return sendable(draft) ? [{ id: question.id, kind: draft.kind, text: draft.text }] : [];
       });
   }
-  function visibleAnswers() {
-    return questionGroups.map(({ room }) => ({
+  function screenAnswers(params, groups, items, draftState) {
+    const roomPage = params?.get("page") !== "questions";
+    const selectedRoom = params?.get("room");
+    const answers = groups.filter(({ room }) => !roomPage || room === selectedRoom).map(({ room, questions }) => ({
       room,
-      answers: roomAnswers(room).filter((answer) => visibleQuestions.some((item) => item.room === room && item.question.id === answer.id))
+      answers: sendableAnswers(questions, draftState.get(room)).filter((answer) => roomPage
+        || items.some((item) => item.room === room && item.question.id === answer.id))
     })).filter((group) => group.answers.length);
+    return { groups: answers, count: answers.reduce((total, group) => total + group.answers.length, 0) };
+  }
+  function roomAnswers(room) {
+    const questions = questionGroups.find((group) => group.room === room)?.questions || [];
+    return sendableAnswers(questions, new Map(questions.map(({ id }) => [id, drafts.get(draftKey(room, id))])));
+  }
+  function visibleAnswers() {
+    return screenAnswers(new URLSearchParams({ page: "questions" }), questionGroups, visibleQuestions, currentQuestionDrafts()).groups;
   }
   function updateDraftUI() {
     document.querySelectorAll("[data-draft-count]").forEach((node) => {
@@ -722,6 +738,19 @@
     const count = visibleAnswers().reduce((total, group) => total + group.answers.length, 0);
     $("all-answer-send").textContent = `記入済みの回答をすべて送信（${count} 件）`;
     $("all-answer-send").disabled = submitting || !count;
+    const draftState = currentQuestionDrafts();
+    const headerCount = screenAnswers(renderedQuestionParams, questionGroups, visibleQuestions, draftState).count;
+    const showHeader = Boolean(headerCount || submitting);
+    $("header-answer-count").textContent = `未送信 ${headerCount}件`;
+    $("header-answer-actions").classList.toggle("is-empty", !showHeader);
+    $("header-answer-actions").setAttribute("aria-hidden", String(!showHeader));
+    $("header-answer-actions").inert = !showHeader;
+    $("header-answer-send").disabled = submitting || !headerCount;
+    const removable = renderedQuestionParams ? sentQuestionRemoval(questionGroups, renderedQuestionParams,
+      renderedQuestionParams.get("page") !== "questions", sentQuestions, draftState).removed.length : 0;
+    $("remove-sent-questions").textContent = `回答済みを外す（${removable} 件）`;
+    $("remove-sent-questions").hidden = !removable;
+    $("remove-sent-questions").disabled = submitting;
   }
   function roomSendButton(room) {
     const node = button("", () => confirmAnswers([{ room, answers: roomAnswers(room) }]));
@@ -807,12 +836,13 @@
   function replaceQuestionGroup(room, group) {
     // 回答の応答と部屋単位の再取得には、全部屋の一覧で受け取った短い表記がない。
     questionGroups = questionGroups.map((current) => current.room === room
-      ? { ...group, date: current.date, title: current.title } : current);
+      ? { ...group, date: current.date, title: current.title, outside: current.outside } : current);
     redrawQuestions();
   }
   async function sendAnswers() {
     if (submitting || !confirmation || confirmation.complete || confirmation.groups.some(includesWithdrawn)) return;
     const batch = confirmation;
+    let guide;
     submitting = true;
     for (const group of batch.groups) group.answers.forEach((answer) => answerErrors.delete(draftKey(group.room, answer.id)));
     renderConfirmation();
@@ -824,7 +854,7 @@
         renderConfirmation();
         updateDraftUI();
       }
-      addAnswerGuide(batch.groups.filter((group) => group.status === "sent"));
+      guide = addAnswerGuide(batch.groups.filter((group) => group.status === "sent"));
       // 一連の送信後に部屋の状態・件数・「回答待ちあり」の条件を取り直す。
       if (batch.groups.some((group) => group.status === "sent" || group.withdrawn)) await refresh();
     } finally {
@@ -833,6 +863,11 @@
       closeRoomConfirmation(state());
       renderConfirmation();
       updateDraftUI();
+      // 再描画によるスクロールの復元が終わってから、すべての送信操作で貼る文を見せる。
+      if (guide?.isConnected) {
+        if (collapsedPane === "questions") setCollapsedPane("");
+        guide.scrollIntoView({ block: "nearest" });
+      }
     }
   }
   async function sendAnswerGroup(submission, batch) {
@@ -931,6 +966,7 @@
     heading.append(element("h2", "エージェントに貼る文"), copy, button("閉じる", () => guide.remove()));
     guide.append(heading, message, status);
     $("answer-guides").replaceChildren(guide);
+    return guide;
   }
   function questionChoices(question, room) {
     const choices = element("ol", undefined, "answer-choices");
@@ -1532,6 +1568,48 @@
     const states = qstate === "all" ? Object.keys(labels) : qstate === "closed" ? ["resolved", "withdrawn"] : qstate === "pending" ? ["pending"] : ["unanswered"];
     return states.includes(question.state) && questionSearchText(question, room).includes(qq.toLocaleLowerCase());
   }
+  function pruneOutsideQuestionGroups(groups, selectedRoom, sent) {
+    return groups.filter((group) => !group.outside || group.room === selectedRoom || sent.get(group.room)?.size);
+  }
+  function questionDisplayItems(groups, params, roomPage, sent, draftState) {
+    return groups.flatMap((group) => group.questions
+      .filter((question) => matchesQuestion(question, group.room, params)
+        || sent.get(group.room)?.has(question.id)
+        || (group.room === params.get("room") && question.id === params.get("q"))
+        || (question.state === "withdrawn" && hasDraft(draftState.get(group.room)?.get(question.id))))
+      .map((question) => ({ room: group.room, roomLabel: roomPage ? null : shortRoomLabel(group), question,
+        outside: group.outside || !matchesQuestion(question, group.room, params) })));
+  }
+  function sentQuestionRemoval(groups, params, roomPage, sent, draftState) {
+    const remaining = new Map();
+    for (const [room, ids] of sent) {
+      const kept = new Set([...ids].filter((id) => hasDraft(draftState.get(room)?.get(id))
+        || (room === params.get("room") && id === params.get("q"))));
+      if (kept.size) remaining.set(room, kept);
+    }
+    const beforeGroups = roomPage ? groups : pruneOutsideQuestionGroups(groups, params.get("room"), sent);
+    const afterGroups = roomPage ? groups : pruneOutsideQuestionGroups(groups, params.get("room"), remaining);
+    const before = questionDisplayItems(beforeGroups, params, roomPage, sent, draftState);
+    const after = questionDisplayItems(afterGroups, params, roomPage, remaining, draftState);
+    const removed = before.filter((item) => !after.some((kept) => kept.room === item.room && kept.question.id === item.question.id));
+    return { remaining, groups: afterGroups, removed };
+  }
+  function questionRenderKey(groups, params, roomPage, sent) {
+    return JSON.stringify([groups, questionFilterState(params), params.get("room"), params.get("q"), roomPage,
+      [...sent].map(([room, ids]) => [room, [...ids]])]);
+  }
+  function removeSentQuestions() {
+    if (submitting || !renderedQuestionParams) return;
+    const removal = sentQuestionRemoval(questionGroups, renderedQuestionParams,
+      renderedQuestionParams.get("page") !== "questions", sentQuestions, currentQuestionDrafts());
+    if (!removal.removed.length) return;
+    sentQuestions.clear();
+    for (const [room, ids] of removal.remaining) sentQuestions.set(room, ids);
+    questionGroups = removal.groups;
+    redrawQuestions();
+    // ボタンが消えても、条件バーの現在の件数を読み、キーボード操作を続けられるようにする。
+    $("question-summary").focus({ preventScroll: true });
+  }
   function flushQuestionRender() {
     if (!deferredQuestionRender) return;
     const args = deferredQuestionRender;
@@ -1539,10 +1617,11 @@
     if (args[2] === generation) renderQuestions(...args);
   }
   function renderQuestions(groups, params, ticket, roomPage, quiet = false) {
+    // 取得開始後に保持を外した場合も、応答に残っている keep の部屋を復活させない。
+    if (!roomPage) groups = pruneOutsideQuestionGroups(groups, params.get("room"), sentQuestions);
     const selectedGroup = groups.find((group) => group.room === params.get("room"));
     const selected = selectedGroup?.questions.find((question) => question.id === params.get("q"));
-    const key = JSON.stringify([groups, questionFilterState(params), params.get("room"), params.get("q"), roomPage,
-      [...sentQuestions].map(([room, ids]) => [room, [...ids]])]);
+    const key = questionRenderKey(groups, params, roomPage, sentQuestions);
     if (quiet && renderedQuestionsKey === key) return selected;
     const active = document.activeElement;
     // 静かな更新は入力欄にフォーカスがある間は保留する。途中で取り下げられても入力を切らない。
@@ -1561,12 +1640,7 @@
       top: active.scrollTop, left: active.scrollLeft
     } : null;
     const scrollTop = $("question-content").scrollTop;
-    const items = groups.flatMap((group) => group.questions
-      .filter((question) => matchesQuestion(question, group.room, params)
-        || sentQuestions.get(group.room)?.has(question.id)
-        || (group.room === selectedGroup?.room && question.id === selected?.id)
-        || (question.state === "withdrawn" && hasDraft(drafts.get(draftKey(group.room, question.id)))))
-      .map((question) => ({ room: group.room, roomLabel: roomPage ? null : shortRoomLabel(group), question, outside: group.outside || !matchesQuestion(question, group.room, params) })));
+    const items = questionDisplayItems(groups, params, roomPage, sentQuestions, currentQuestionDrafts());
     visibleQuestions = [...items];
     const matchedCount = items.filter(({ outside }) => !outside).length;
     const withdrawnDraftCount = items.filter(({ room, question }) => question.state === "withdrawn" && !matchesQuestion(question, room, params)).length;
@@ -1844,6 +1918,16 @@
     change(initialQuestionFilters());
   });
   $("all-answer-send").addEventListener("click", () => confirmAnswers(visibleAnswers()));
+  $("header-answer-send").addEventListener("click", () => {
+    if (submitting) return;
+    const { groups, count } = screenAnswers(renderedQuestionParams, questionGroups, visibleQuestions, currentQuestionDrafts());
+    if (!count) return;
+    if (collapsedPane === "questions") setCollapsedPane("");
+    confirmAnswers(groups);
+    $("answer-confirmation").focus({ preventScroll: true });
+    $("answer-confirmation").scrollIntoView({ block: "nearest" });
+  });
+  $("remove-sent-questions").addEventListener("click", removeSentQuestions);
   for (const event of ["click", "keyup"]) document.addEventListener(event, () => {
     // クリック先の送信・開閉などを処理してから保留中の描画を反映する。
     if (deferredQuestionRender) setTimeout(flushQuestionRender, 0);

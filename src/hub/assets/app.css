@@ -49,6 +49,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 nav, .filter-bar, .hub-actions, .tabs, .toolbar { display: flex; align-items: center; gap: 4px; }
 .app-header nav, .hub-actions { flex: 0 0 auto; }
 .app-header nav button { white-space: nowrap; }
+.header-answer-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 3px; white-space: nowrap; }
+.header-answer-actions .chip { min-width: 7em; justify-content: center; font-variant-numeric: tabular-nums; }
+.header-answer-actions.is-empty { display: none; }
+/* 十分に広い画面だけ、非表示の間も場所を確保して帯の出し入れによる折り返しを防ぐ。 */
+@media (min-width: 1600px) {
+  .header-answer-actions.is-empty { display: flex; visibility: hidden; }
+}
 .filter-bar { min-width: 0; flex-wrap: wrap; padding: 5px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); font-size: 12px; }
 .filter-label { flex: 0 0 auto; color: var(--fg); }
 #filters { flex: 1 1 850px; }
@@ -64,6 +71,8 @@ nav, .filter-bar, .hub-actions, .tabs, .toolbar { display: flex; align-items: ce
 #days { width: 44px; }
 #query, #question-query { flex: 1 1 100px; min-width: 0; width: 100%; }
 #question-summary { color: var(--muted); white-space: nowrap; }
+#remove-sent-questions { border-color: var(--ink); white-space: nowrap; }
+#question-summary:focus-visible, #answer-confirmation:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
 #question-filters { flex: 0 0 auto; }
 #filter-summary { flex: 1 1 100px; max-width: 190px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .hub-actions { border-left: 1px solid var(--line); padding-left: 6px; }
@@ -243,7 +252,7 @@ summary { cursor: pointer; color: var(--muted); }
   #question-content { flex: 1 0 min(60dvh, 360px); }
 }
 @media print {
-  .app-header, #notice, #rooms, .tabs, .toolbar, .filter-bar, .pane-heading button, .pane-restore, .file-browser, .open-button,
+  .app-header, #header-answer-actions, #notice, #rooms, .tabs, .toolbar, .filter-bar, .pane-heading button, .pane-restore, .file-browser, .open-button,
   .answer-form, .answer-choices button, .additional-answer, .withdrawn-draft, .draft-badge, [data-draft-count], [data-room-send], #all-answer-actions, #draft-warning, #answer-confirmation, #answer-guides { display: none !important; }
   html, body { height: auto; overflow: visible; }
   body, #content { color: black; background: white; }
