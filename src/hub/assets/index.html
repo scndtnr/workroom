@@ -16,6 +16,10 @@
       <button type="button" data-page="rooms">部屋</button>
       <button type="button" data-page="questions" title="上の条件で絞った部屋の確認事項">確認事項</button>
     </nav>
+    <div id="header-answer-actions" class="header-answer-actions is-empty" aria-hidden="true" inert>
+      <span id="header-answer-count" class="badge chip draft">未送信 0件</span>
+      <button id="header-answer-send" class="primary" type="button" disabled>確認して送信</button>
+    </div>
     <form id="filters" class="filter-bar" aria-label="部屋の条件">
       <strong class="filter-label">部屋の条件</strong>
       <div id="scope-filter" class="segments" data-value="filtered" role="group" aria-label="部屋の範囲" title="全部屋では状態と期間だけを無視します。検索・未回答あり・並びは有効です">
@@ -77,12 +81,13 @@
                 <button type="button" value="room" aria-pressed="true">部屋ごと</button><button type="button" value="new" aria-pressed="false">新しい順</button>
               </div>
               <button id="clear-question-filters" type="button">クリア</button>
-              <span id="question-summary" aria-live="polite">0 件</span>
+              <span id="question-summary" aria-live="polite" tabindex="-1">0 件</span>
+              <button id="remove-sent-questions" type="button" title="このタブで回答を送ったので残している確認事項を、一覧から外します。ファイルは読み直しません" hidden>回答済みを外す（0 件）</button>
             </form>
             <div id="all-answer-actions" class="answer-actions" hidden>
               <button id="all-answer-send" class="primary" type="button" disabled>記入済みの回答をすべて送信（0 件）</button>
             </div>
-            <section id="answer-confirmation" class="answer-confirmation" aria-label="回答の送信確認" aria-live="polite" hidden></section>
+            <section id="answer-confirmation" class="answer-confirmation" aria-label="回答の送信確認" aria-live="polite" tabindex="-1" hidden></section>
             <div id="question-content" class="content-body">
               <p id="draft-warning" class="warning" role="status" hidden></p>
               <div id="answer-guides" aria-live="polite"></div>
